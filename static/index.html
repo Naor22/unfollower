@@ -177,7 +177,7 @@
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
     .mode-tag { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 99px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; background: rgba(124,108,255,0.16); color: var(--accent-2); border: 1px solid rgba(124,108,255,0.3); }
     .phase { color: var(--muted); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .acct-bar { display: inline-flex; align-items: center; gap: 6px; }
+    .acct-bar { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .acct-bar .acct { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border-radius: 99px; font-size: 12px; color: var(--muted); background: var(--surface); border: 1px solid var(--border); white-space: nowrap; }
     .acct-bar .acct svg { width: 13px; height: 13px; opacity: 0.7; }
     .acct-bar .acct b { color: var(--text); font-variant-numeric: tabular-nums; }
@@ -388,6 +388,9 @@
       .content { padding: 16px 14px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
       .overview-cols { grid-template-columns: 1fr; }
       .phase { flex-basis: 100%; order: 5; }
+      /* Account stats get their own full-width row and wrap so the
+         "foll · unf · likes today" pill never gets clipped on a phone. */
+      .acct-bar { flex-basis: 100%; order: 4; gap: 5px; }
       .mini-progress { display: none; }
       input, select, textarea { font-size: 16px; }
       .topbar .ctrl-group button span { display: none; }
@@ -752,7 +755,7 @@
                   <div class="reach-stats">
                     <div><div class="rs-n" x-text="state.reach_liked || 0"></div><div class="rs-l">liked</div></div>
                     <div><div class="rs-n" x-text="state.reach_scraped || 0"></div><div class="rs-l">scraped</div></div>
-                    <div><div class="rs-n" x-text="state.reach_pool || 0"></div><div class="rs-l">in pool</div></div>
+                    <div><div class="rs-n" x-text="(isRunning ? state.reach_pool : followTotals.reach_pool) || followTotals.reach_pool || 0"></div><div class="rs-l">in pool</div></div>
                     <div><div class="rs-n" x-text="state.story_viewed_count || 0"></div><div class="rs-l">total</div></div>
                   </div>
                 </div>
@@ -1217,19 +1220,20 @@
               <div style="flex:1"></div>
               <span class="pill" x-show="scraper" :style="scraper && scraper.running ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--danger-bg);color:var(--danger)'" x-text="scraper ? (scraper.running ? 'running' : 'down') : ''"></span>
             </div>
-            <p class="hint" style="margin-bottom:12px;">Scrapes sources + filters candidates on a 2nd Chrome (burner account), publishing a cleaned pool for the bot. Browser-only, isolated from your main account. Auto-starts with the bot in follow/churn mode.</p>
+            <p class="hint" style="margin-bottom:12px;">Scrapes + filters follow candidates AND harvests reach post-links on a 2nd Chrome (burner account), publishing cleaned pools for the bot. Browser-only, isolated from your main account. Runs only in the bot's dead time and fills both pools to their high-water marks; the main account stays consume-only.</p>
             <div class="btn-row" style="margin-bottom:14px;">
               <button class="primary" @click="scraperControl('start')" :disabled="scraperBusy || (scraper && scraper.running)">Start scraper</button>
               <button class="ghost" @click="scraperControl('stop')" :disabled="scraperBusy || !(scraper && scraper.running)">Stop scraper</button>
             </div>
             <template x-if="scraper && scraper.present">
               <div>
-                <div class="reach-stats" style="grid-template-columns:repeat(3,1fr);">
+                <div class="reach-stats" style="grid-template-columns:repeat(4,1fr);">
                   <div><div class="rs-n" x-text="scraper.backlog || 0"></div><div class="rs-l">backlog</div></div>
-                  <div><div class="rs-n" x-text="scraper.ready || 0"></div><div class="rs-l">ready</div></div>
+                  <div><div class="rs-n" x-text="scraper.ready || 0"></div><div class="rs-l">follow pool</div></div>
+                  <div><div class="rs-n" x-text="scraper.reach_ready || 0"></div><div class="rs-l">reach pool</div></div>
                   <div><div class="rs-n" x-text="scraper.rejected || 0"></div><div class="rs-l">rejected</div></div>
                 </div>
-                <p class="hint" style="margin-top:8px;font-size:11px;"><strong>backlog</strong> = scraped, waiting to be vetted · <strong>ready</strong> = vetted &amp; eligible (what the bot follows) · <strong>rejected</strong> = filtered out</p>
+                <p class="hint" style="margin-top:8px;font-size:11px;"><strong>backlog</strong> = scraped, waiting to be vetted · <strong>follow pool</strong> = vetted &amp; eligible (what the bot follows) · <strong>reach pool</strong> = harvested post links to like · <strong>rejected</strong> = filtered out</p>
                 <p class="hint" style="margin-top:10px;">
                   <span x-show="scraper.phase" x-text="scraper.phase"></span><span x-show="scraper.age != null"> · updated <span x-text="scraper.age"></span>s ago</span>
                   <span x-show="scraper.error" style="color:var(--warning);"><br>⚠ <span x-text="scraper.error"></span></span>

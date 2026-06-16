@@ -185,8 +185,17 @@ Chrome logged into a throwaway "scraper" account**, so it never interferes with 
 core bot and your **main account bears zero scraping risk**. It scrapes the
 configured sources, browser-navigates each candidate to filter it (account-agnostic
 checks only — posts / follower range / private), and publishes a cleaned
-`data/follow_candidates.json` the core bot consumes. Browser navigation only — no IG
-API.
+`data/follow_candidates.json` the core bot consumes. It **also harvests reach
+post-links** into `data/reach_pool.json` (when `follow.engagement.story_reach_enabled`
++ `reach_external_harvest` are on), so the main account never loads the easily-gated
+hashtag grids itself — it just likes from the cached pool. Browser navigation only —
+no IG API.
+
+The burner fills **both** pools to their high-water marks (`scraper.pool_high_mult` ×
+the pool's daily figure) only during the bot's dead time; the bot stays idle whenever
+either pool it consumes is below its low-water (follow: a daily cap of candidates;
+reach: today's remaining like budget), then runs while the scraper waits. One process
+holds the Pi at a time.
 
 It uses the **same persistent-profile model as the main bot** (§5 Option A), just a
 separate profile dir and the burner's credentials — no 2nd Chrome to launch by hand.

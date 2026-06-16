@@ -40,6 +40,14 @@ DEFAULT_FOLLOW = {
         "interleave_unfollows": 2,         # interleave ratio (unfollows : follows per round)
         "interleave_follows": 1,
     },
+    "engagement": {
+        # reach link pool: the scraper/burner fills data/reach_pool.json and the main
+        # account is consume-only (never loads gated hashtag grids). Merged into the
+        # existing engagement block - only the missing keys are added.
+        "reach_external_harvest": True,    # off = legacy in-loop harvest on the main account
+        "reach_max_same_tag_streak": 2,    # consume diversity: max likes in a row from one tag
+        "reach_scrape_per_tag": 60,        # burner: post links to grab per hashtag visit
+    },
 }
 
 DEFAULT_LOGS = {
@@ -48,6 +56,7 @@ DEFAULT_LOGS = {
     "follow_failed_log": "data/follow_failed.log",
     "churn_unfollowed_log": "data/churn_unfollowed.log",
     "follow_kept_log": "data/follow_kept.log",
+    "reach_liked_log": "data/reach_liked.log",
     "filter_checked_log": "data/filter_checked.log",
     "filter_rejected_log": "data/filter_rejected.log",
 }

@@ -460,6 +460,7 @@ async def get_follow_lists():
             "follow_failed": len(failed),
             "churn_unfollowed": len(churn_unfollowed),
             "follow_kept": len(kept),
+            "reach_pool": len(bot.read_reach_pool()),   # harvested post links waiting to be liked
         },
     }
 
