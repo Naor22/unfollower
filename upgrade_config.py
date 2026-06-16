@@ -56,7 +56,10 @@ DEFAULT_BEHAVIOR = {
 
 DEFAULT_SCRAPER = {
     "enabled": False,
-    "cdp_endpoint": "http://localhost:9223",   # the burner account's 2nd Chrome
+    # Persistent-profile model (like the main bot): cdp_endpoint "" + user_data_dir,
+    # logged in once via scraper_login.py. Set cdp_endpoint to a :9223 URL to use CDP.
+    "cdp_endpoint": "",
+    "user_data_dir": "data/scraper-profile",
     "idle_seconds": 600,
     "min_delay": 3,
     "max_delay": 8,

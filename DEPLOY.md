@@ -188,34 +188,35 @@ checks only — posts / follower range / private), and publishes a cleaned
 `data/follow_candidates.json` the core bot consumes. Browser navigation only — no IG
 API.
 
+It uses the **same persistent-profile model as the main bot** (§5 Option A), just a
+separate profile dir and the burner's credentials — no 2nd Chrome to launch by hand.
+
 **1. Create a throwaway IG account** (the "scraper"/burner). It only needs to *view*
-profiles, so a basic account is fine. If it gets flagged it's expendable.
+profiles. If it gets flagged it's expendable; your main account is untouched.
 
-**2. Start a 2nd Chrome on the Pi for the burner**, on a different debug port and its
-own profile dir, then log the burner in once (it persists):
-
-```bash
-# headless 2nd Chrome on port 9223 with its own profile dir
-chromium --headless=new --no-sandbox \
-  --remote-debugging-port=9223 \
-  --user-data-dir=/home/naor223/.config/chromium-scraper &
-# log the burner in once (e.g. via a one-off headed session or your login helper),
-# pointing at this profile dir, so the session persists across restarts.
+**2. Add the burner credentials to `.env`** on the Pi (alongside the main ones):
+```
+SCRAPER_IG_USERNAME=your_burner_handle
+SCRAPER_IG_PASSWORD=your_burner_password
 ```
 
-(If you prefer the persistent-profile model instead of CDP: set
-`scraper.cdp_endpoint: ""` and `scraper.user_data_dir:
-/home/naor223/.config/chromium-scraper` in `config.yaml`, and log the burner into
-that dir once.)
+**3. Add the new config keys + set the scraper options.** Pull the defaults in, then
+either edit `config.yaml` or use the dashboard (Config → Scraper & autopilot):
+```bash
+cd /home/naor223/unfollower && source .venv/bin/activate
+python upgrade_config.py        # adds scraper{}, keep_running, new log keys
+```
+Set: `scraper.enabled: true`, `scraper.cdp_endpoint: ""`,
+`scraper.user_data_dir: data/scraper-profile`, `follow.external_scraper: true`, and
+(recommended) `behavior.keep_running: true`.
 
-**3. Point the config at it** (`config.yaml`): `scraper.cdp_endpoint:
-http://localhost:9223`, `scraper.enabled: true`, and `follow.external_scraper: true`
-(so the core bot stops scraping and just consumes the cleaned pool). Optionally
-`behavior.keep_running: true` so the core bot waits (sleeps & re-checks) instead of
-stopping when the pool is momentarily empty.
+**4. Log the burner in once** (console 2FA, no screen needed — like `pi_login.py`):
+```bash
+python scraper_login.py
+# enter the 2FA code if prompted; on success the burner profile is saved
+```
 
-**4. Install the service:**
-
+**5. Install + start the service:**
 ```bash
 sudo cp /home/naor223/unfollower/deploy/unfollower-scraper.service /etc/systemd/system/
 # edit User/paths if not naor223:/home/naor223/unfollower
