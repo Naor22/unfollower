@@ -16,6 +16,7 @@
   <meta name="apple-mobile-web-app-title" content="unfollower" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%237c6cff'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M120 134v-12a26 26 0 0 0-26-26H56a26 26 0 0 0-26 26v12'/%3E%3Ccircle cx='75' cy='62' r='26'/%3E%3Cpath d='M150 134v-12a26 26 0 0 0-20-25'/%3E%3C/g%3E%3C/svg%3E" />
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script defer src="https://unpkg.com/alpinejs@3.14.7/dist/cdn.min.js"></script>
   <style>
     :root {
@@ -294,6 +295,17 @@
     .toolbar select { width: auto; min-width: 150px; }
     .toolbar .count-chip { font-size: 12px; color: var(--muted); white-space: nowrap; }
     [x-cloak] { display: none !important; }
+    .chart-box { position: relative; height: 260px; width: 100%; }
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .chart-grid > * { min-width: 0; }
+    @media (max-width: 860px) { .chart-grid { grid-template-columns: 1fr; } }
+    .mini-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+    .mini-stats .ms { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 11px 13px; }
+    .mini-stats .ms .v { font-size: 20px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .mini-stats .ms .v.good { color: var(--success); }
+    .mini-stats .ms .v.bad { color: var(--danger); }
+    .mini-stats .ms .v.warn { color: var(--warning); }
+    .mini-stats .ms .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 4px; }
     .deploy-rows { display: flex; flex-direction: column; gap: 6px; }
     .deploy-line { display: flex; gap: 10px; font-size: 12.5px; align-items: baseline; }
     .deploy-line .k { color: var(--muted); flex: none; width: 76px; text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px; }
@@ -936,25 +948,93 @@
 
         <!-- ============ SOURCE ANALYTICS ============ -->
         <div x-show="tab==='analytics'" x-transition.opacity>
-          <div class="page-head"><h1>Source analytics</h1><p>Per-source follow-back rate, measured at churn time. Shift your budget toward the sources that convert. "Measured" = follows that have reached the churn review.</p></div>
-          <div class="card">
-            <div class="toolbar">
-              <div class="grow"></div>
-              <button class="ghost sm" @click="loadAnalytics()">Refresh</button>
-            </div>
-            <div class="list-scroll">
-              <template x-if="sourceAnalytics.length === 0"><div class="empty"><div class="t">No data yet</div><div class="s">Analytics fill in once follows reach the churn review.</div></div></template>
-              <template x-for="(row, i) in sourceAnalytics" :key="row.source + i">
-                <div class="list-row">
-                  <span class="username"><span x-text="row.source"></span></span>
-                  <div class="grow"></div>
-                  <span class="badge" x-text="row.followed + ' followed'"></span>
-                  <span class="badge skipped" x-text="row.measured + ' measured'"></span>
-                  <span class="badge" :class="row.rate >= 10 ? 'kept' : 'failed'" x-text="row.followed_back + ' back · ' + row.rate + '%'"></span>
+          <div class="page-head" style="display:flex;align-items:flex-start;gap:12px;">
+            <div style="flex:1 1 auto;min-width:0;"><h1>Analytics</h1><p>Growth, action volumes, conversion, failures and runtime — your once-in-a-while health check. <span x-show="analytics && analytics.runtime">Observed over <strong x-text="analytics.runtime.observed_days"></strong> days.</span></p></div>
+            <button class="ghost sm" @click="loadAnalytics()">Refresh</button>
+          </div>
+
+          <template x-if="!analytics">
+            <div class="card"><div class="empty"><div class="t">Loading analytics…</div><div class="s">If this stays empty, the bot hasn't produced data yet.</div></div></div>
+          </template>
+
+          <template x-if="analytics">
+            <div>
+              <!-- key totals + rates -->
+              <div class="card">
+                <div class="card-title">Overview</div>
+                <div class="mini-stats">
+                  <div class="ms"><div class="v" x-text="fmtNum(state.account_followers)"></div><div class="l">Followers now</div></div>
+                  <div class="ms"><div class="v" x-text="fmtNum(state.account_following)"></div><div class="l">Following now</div></div>
+                  <div class="ms"><div class="v good" x-text="analytics.totals.followed"></div><div class="l">Followed (all-time)</div></div>
+                  <div class="ms"><div class="v" x-text="analytics.rates.follow_back_rate != null ? analytics.rates.follow_back_rate + '%' : '—'"></div><div class="l" x-text="'Follow-back (' + analytics.rates.followed_back + '/' + analytics.rates.measured + ')'"></div></div>
+                  <div class="ms"><div class="v warn" x-text="analytics.totals.churned"></div><div class="l">Churned off</div></div>
+                  <div class="ms"><div class="v" x-text="analytics.totals.likes"></div><div class="l">Reach likes</div></div>
+                  <div class="ms"><div class="v" x-text="analytics.totals.checked"></div><div class="l">Vetted (kept)</div></div>
+                  <div class="ms"><div class="v bad" x-text="analytics.rates.reject_rate != null ? analytics.rates.reject_rate + '%' : '—'"></div><div class="l" x-text="'Rejected (' + analytics.totals.rejected + ')'"></div></div>
+                </div>
+              </div>
+
+              <!-- runtime / reliability -->
+              <div class="card">
+                <div class="card-title">Runtime &amp; reliability</div>
+                <div class="mini-stats">
+                  <div class="ms"><div class="v" :class="analytics.runtime.bot_uptime_pct >= 50 ? 'good' : ''" x-text="analytics.runtime.bot_uptime_pct != null ? analytics.runtime.bot_uptime_pct + '%' : '—'"></div><div class="l">Bot uptime</div></div>
+                  <div class="ms"><div class="v" x-text="fmtDuration(analytics.runtime.avg_daily_bot_runtime)"></div><div class="l">Avg bot/day</div></div>
+                  <div class="ms"><div class="v" x-text="fmtDuration(analytics.runtime.avg_daily_scraper_runtime)"></div><div class="l">Avg scraper/day</div></div>
+                  <div class="ms"><div class="v" x-text="fmtDuration(analytics.runtime.bot_runtime_total)"></div><div class="l">Total bot runtime</div></div>
+                  <div class="ms"><div class="v" x-text="fmtDuration(analytics.runtime.downtime_total)"></div><div class="l">Downtime</div></div>
+                  <div class="ms"><div class="v" x-text="analytics.runtime.bot_runs"></div><div class="l">Bot starts</div></div>
+                  <div class="ms"><div class="v" :class="analytics.runtime.errors ? 'bad' : ''" x-text="analytics.runtime.errors"></div><div class="l">Errors</div></div>
+                  <div class="ms"><div class="v" :class="analytics.runtime.checkpoints ? 'bad' : ''" x-text="analytics.runtime.checkpoints"></div><div class="l">Checkpoints</div></div>
+                  <div class="ms"><div class="v" :class="analytics.runtime.soft_blocks ? 'warn' : ''" x-text="analytics.runtime.soft_blocks"></div><div class="l">Soft-blocks</div></div>
+                  <div class="ms"><div class="v" :class="analytics.runtime.watchdog_restarts ? 'warn' : ''" x-text="analytics.runtime.watchdog_restarts"></div><div class="l">Watchdog restarts</div></div>
+                  <div class="ms"><div class="v" x-text="analytics.runtime.bot_current_uptime != null ? fmtDuration(analytics.runtime.bot_current_uptime) : 'off'"></div><div class="l">Bot up now</div></div>
+                  <div class="ms"><div class="v" x-text="analytics.runtime.scraper_current_uptime != null ? fmtDuration(analytics.runtime.scraper_current_uptime) : 'off'"></div><div class="l">Scraper up now</div></div>
+                </div>
+                <p class="hint" style="margin-top:10px;" x-show="analytics.runtime.last_error"><span style="color:var(--danger);">Last error:</span> <span x-text="analytics.runtime.last_error"></span></p>
+                <p class="hint" x-show="analytics.runtime.last_checkpoint"><span style="color:var(--danger);">Last checkpoint:</span> <span x-text="analytics.runtime.last_checkpoint"></span></p>
+              </div>
+
+              <!-- today vs caps -->
+              <template x-if="analytics.today && analytics.today.caps">
+                <div class="card">
+                  <div class="card-title">Today <span class="pill">vs per-day caps</span></div>
+                  <div class="mini-stats">
+                    <div class="ms"><div class="v" x-text="(analytics.today.follows||0) + ' / ' + (analytics.today.caps.follows||'∞')"></div><div class="l">Follows</div></div>
+                    <div class="ms"><div class="v" x-text="(analytics.today.unfollows||0) + ' / ' + (analytics.today.caps.unfollows||'∞')"></div><div class="l">Unfollows</div></div>
+                    <div class="ms"><div class="v" x-text="(analytics.today.likes||0) + ' / ' + (analytics.today.caps.likes||'∞')"></div><div class="l">Likes</div></div>
+                  </div>
                 </div>
               </template>
+
+              <!-- charts -->
+              <div class="chart-grid">
+                <div class="card"><div class="card-title">Follower growth</div><div class="chart-box"><canvas id="chGrowth"></canvas></div></div>
+                <div class="card"><div class="card-title">Daily actions</div><div class="chart-box"><canvas id="chActions"></canvas></div></div>
+                <div class="card"><div class="card-title">Scraper: vetted vs rejected / day</div><div class="chart-box"><canvas id="chScraper"></canvas></div></div>
+                <div class="card"><div class="card-title">Follow-back funnel</div><div class="chart-box"><canvas id="chFunnel"></canvas></div></div>
+                <div class="card"><div class="card-title">Top follow failures</div><div class="chart-box"><canvas id="chFails"></canvas></div></div>
+                <div class="card"><div class="card-title">Why candidates were rejected</div><div class="chart-box"><canvas id="chRejects"></canvas></div></div>
+              </div>
+
+              <!-- per-source conversion table -->
+              <div class="card">
+                <div class="card-title">Per-source conversion <span class="pill">follow-back rate at churn</span></div>
+                <div class="list-scroll">
+                  <template x-if="sourceAnalytics.length === 0"><div class="empty"><div class="t">No source data yet</div><div class="s">Fills in once follows reach the churn review.</div></div></template>
+                  <template x-for="(row, i) in sourceAnalytics" :key="row.source + i">
+                    <div class="list-row">
+                      <span class="username"><span x-text="row.source"></span></span>
+                      <div class="grow"></div>
+                      <span class="badge" x-text="row.followed + ' followed'"></span>
+                      <span class="badge skipped" x-text="row.measured + ' measured'"></span>
+                      <span class="badge" :class="row.rate >= 10 ? 'kept' : 'failed'" x-text="row.followed_back + ' back · ' + row.rate + '%'"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
 
         <!-- ============ CANDIDATES ============ -->
@@ -1536,6 +1616,8 @@
         sourcesHashtagsText: '',
         discoveredSources: [],
         sourceAnalytics: [],
+        analytics: null,
+        _charts: {},
         discoveryKeywordsText: '',
         discoveryNegativeText: '',
         system: null,
@@ -1972,8 +2054,87 @@
         },
 
         async loadAnalytics() {
-          try { const j = await this.fetch('/api/source-analytics'); this.sourceAnalytics = j.rows || []; }
-          catch (e) { this.showToast(e.message, 'error'); }
+          try {
+            const [src, an] = await Promise.all([
+              this.fetch('/api/source-analytics'),
+              this.fetch('/api/analytics'),
+            ]);
+            this.sourceAnalytics = src.rows || [];
+            this.analytics = an;
+            this.$nextTick(() => this.renderCharts());
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        _chart(id, config) {
+          if (typeof Chart === 'undefined') return;
+          const el = document.getElementById(id);
+          if (!el) return;
+          if (this._charts[id]) { try { this._charts[id].destroy(); } catch (e) {} }
+          const muted = '#8a90a2', grid = 'rgba(255,255,255,0.06)';
+          config.options = Object.assign({
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: muted, boxWidth: 12, font: { size: 11 } } } },
+            scales: config._noscales ? undefined : {
+              x: { ticks: { color: muted, font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { color: grid } },
+              y: { ticks: { color: muted, font: { size: 10 } }, grid: { color: grid }, beginAtZero: true },
+            },
+          }, config.options || {});
+          this._charts[id] = new Chart(el, config);
+        },
+
+        renderCharts() {
+          const a = this.analytics; if (!a) return;
+          const P = '#7c6cff', G = '#3fcf8e', R = '#ff5c7c', Y = '#ffb547', B = '#4aa8ff', M = '#9aa0b4';
+          // Growth (followers + following over time)
+          const gl = (a.growth || []);
+          this._chart('chGrowth', {
+            type: 'line',
+            data: { labels: gl.map(p => (p.ts || '').slice(5, 16)),
+              datasets: [
+                { label: 'Followers', data: gl.map(p => p.followers), borderColor: G, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+                { label: 'Following', data: gl.map(p => p.following), borderColor: P, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+              ] },
+          });
+          // Daily actions (stacked bars)
+          const d = (a.daily || []), dl = d.map(x => x.date.slice(5));
+          this._chart('chActions', {
+            type: 'bar',
+            data: { labels: dl, datasets: [
+              { label: 'Follows', data: d.map(x => x.follows), backgroundColor: G },
+              { label: 'Churned', data: d.map(x => x.churn), backgroundColor: P },
+              { label: 'Unfollows', data: d.map(x => x.unfollows), backgroundColor: B },
+              { label: 'Likes', data: d.map(x => x.likes), backgroundColor: Y },
+            ] },
+            options: { scales: { x: { stacked: true, ticks: { color: M, font: { size: 10 }, maxTicksLimit: 10 }, grid: { display: false } }, y: { stacked: true, ticks: { color: M }, grid: { color: 'rgba(255,255,255,0.06)' }, beginAtZero: true } } },
+          });
+          // Scraper vetted vs rejected per day
+          this._chart('chScraper', {
+            type: 'bar',
+            data: { labels: dl, datasets: [
+              { label: 'Vetted (kept)', data: d.map(x => x.checked), backgroundColor: G },
+              { label: 'Rejected', data: d.map(x => x.rejected), backgroundColor: R },
+            ] },
+          });
+          // Follow-back funnel (doughnut)
+          const back = a.rates.followed_back || 0, meas = a.rates.measured || 0;
+          this._chart('chFunnel', {
+            type: 'doughnut', _noscales: true,
+            data: { labels: ['Followed back', 'Did not'], datasets: [{ data: [back, Math.max(0, meas - back)], backgroundColor: [G, M], borderWidth: 0 }] },
+            options: { cutout: '62%' },
+          });
+          // Failure reasons (horizontal bar)
+          const fr = a.fail_reasons || [];
+          this._chart('chFails', {
+            type: 'bar',
+            data: { labels: fr.map(x => x.reason.slice(0, 22)), datasets: [{ label: 'count', data: fr.map(x => x.count), backgroundColor: R }] },
+            options: { indexAxis: 'y', plugins: { legend: { display: false } } },
+          });
+          // Reject reasons (doughnut)
+          const rr = a.reject_reasons || [];
+          this._chart('chRejects', {
+            type: 'doughnut', _noscales: true,
+            data: { labels: rr.map(x => x.reason), datasets: [{ data: rr.map(x => x.count), backgroundColor: [R, Y, B, P, G, M], borderWidth: 0 }] },
+          });
         },
 
         isFollowMode() { return this.config && (this.config.mode === 'follow' || this.config.mode === 'churn'); },

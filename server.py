@@ -150,6 +150,7 @@ def _watchdog_loop():
             try:
                 subprocess.Popen(_restart_cmd(service))
                 last_restart = time.time()
+                bot.append_event("watchdog_restart", f"stuck {age:.0f}s")
             except Exception as e:
                 state_manager.emit("log", {"level": "error",
                                            "msg": f"watchdog restart failed: {e}"})
@@ -161,6 +162,10 @@ def _watchdog_loop():
 async def lifespan(app: FastAPI):
     state_manager.attach_loop(asyncio.get_running_loop())
     threading.Thread(target=_watchdog_loop, daemon=True).start()
+    try:
+        bot.append_event("server_start")
+    except Exception:
+        pass
     # Seed the account status bar from the last-known counts so it shows on open
     # even when idle / right after a restart, before any live fetch.
     try:
@@ -583,6 +588,151 @@ async def get_source_analytics():
         rows.append(a)
     rows.sort(key=lambda a: (a["rate"], a["measured"]), reverse=True)
     return {"rows": rows}
+
+
+@app.get("/api/analytics")
+async def get_analytics():
+    """Everything the Analytics page graphs: growth, daily action volumes, totals
+    & rates, failure/skip/reject reason breakdowns, and runtime/uptime/restart/error
+    stats derived from the lifecycle event log."""
+    import collections as _c
+    import json as _json
+
+    def day(ts):
+        return (ts or "")[:10]
+
+    def reason_counts(rows, n=12):
+        c = _c.Counter((r.get("reason") or "?") for r in rows)
+        return [{"reason": k, "count": v} for k, v in c.most_common(n)]
+
+    def ts_rows(path):
+        """Read a 'ts\\t...' log into just timestamps (for daily counting)."""
+        p = bot.ROOT / path
+        if not p.exists():
+            return []
+        out = []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            parts = line.split("\t")
+            if parts and parts[0]:
+                out.append(parts[0])
+        return out
+
+    followed = bot.read_followed_log()
+    kept = bot.read_follow_kept_log()
+    churned = bot.read_churn_unfollowed_log()
+    f_skipped = bot.read_follow_skipped_log()
+    f_failed = bot.read_follow_failed_log()
+    unfollowed = bot.read_unfollowed_log()
+    failed = bot.read_failed_log()
+    checked = bot.read_filter_checked_log()
+    rejected = bot.read_filter_rejected_log()
+    outcomes = bot.read_follow_outcomes()
+    history = bot.read_account_history()
+    events = bot.read_runtime_events()
+    likes_ts = ts_rows("data/reach_liked.log")
+    stories_ts = ts_rows("data/story_viewed.log")
+
+    totals = {
+        "followed": len(followed), "kept": len(kept), "churned": len(churned),
+        "follow_skipped": len(f_skipped), "follow_failed": len(f_failed),
+        "unfollowed": len(unfollowed), "failed": len(failed),
+        "checked": len(checked), "rejected": len(rejected),
+        "likes": len(likes_ts), "stories": len(stories_ts),
+    }
+    measured = len({o["username"].lower(): o for o in outcomes})
+    back = sum(1 for o in {o["username"].lower(): o for o in outcomes}.values() if o["followed_back"])
+    chk_rej = len(checked) + len(rejected)
+    rates = {
+        "follow_back_rate": round(100 * back / measured, 1) if measured else None,
+        "reject_rate": round(100 * len(rejected) / chk_rej, 1) if chk_rej else None,
+        "measured": measured, "followed_back": back,
+    }
+
+    # daily series
+    daily = _c.defaultdict(lambda: {"follows": 0, "unfollows": 0, "churn": 0,
+                                    "likes": 0, "checked": 0, "rejected": 0})
+    for r in followed:
+        daily[day(r["timestamp"])]["follows"] += 1
+    for r in unfollowed:
+        daily[day(r["timestamp"])]["unfollows"] += 1
+    for r in churned:
+        daily[day(r["timestamp"])]["churn"] += 1
+    for r in checked:
+        daily[day(r["timestamp"])]["checked"] += 1
+    for r in rejected:
+        daily[day(r["timestamp"])]["rejected"] += 1
+    for t in likes_ts:
+        daily[day(t)]["likes"] += 1
+    daily_list = [dict(date=d, **v) for d, v in sorted(daily.items()) if d][-30:]
+
+    # growth (downsample to keep the payload small)
+    growth = [{"ts": r["timestamp"], "followers": r["followers"], "following": r["following"]}
+              for r in history]
+    if len(growth) > 300:
+        step = len(growth) // 300 + 1
+        growth = growth[::step]
+
+    # runtime / lifecycle
+    def intervals(start_kind, stop_kind):
+        total, open_start, count = 0.0, None, 0
+        for e in events:
+            t = bot.parse_log_ts(e["timestamp"])
+            if t is None:
+                continue
+            if e["kind"] == start_kind:
+                open_start, count = t, count + 1
+            elif e["kind"] == stop_kind and open_start is not None:
+                total += max(0.0, t - open_start)
+                open_start = None
+        cur = None
+        if open_start is not None:
+            cur = max(0.0, time.time() - open_start)
+            total += cur
+        return total, count, cur
+
+    bot_total, bot_runs, bot_cur = intervals("bot_start", "bot_stop")
+    scr_total, scr_runs, scr_cur = intervals("scraper_start", "scraper_stop")
+    kinds = _c.Counter(e["kind"] for e in events)
+    first_ts = bot.parse_log_ts(events[0]["timestamp"]) if events else None
+    span = (time.time() - first_ts) if first_ts else 0.0
+    days = max(1.0, span / 86400)
+    runtime = {
+        "bot_runtime_total": int(bot_total), "scraper_runtime_total": int(scr_total),
+        "bot_runs": bot_runs, "scraper_runs": scr_runs,
+        "bot_current_uptime": int(bot_cur) if bot_cur else None,
+        "scraper_current_uptime": int(scr_cur) if scr_cur else None,
+        "errors": kinds.get("error", 0) + kinds.get("scraper_error", 0),
+        "checkpoints": kinds.get("checkpoint", 0),
+        "soft_blocks": kinds.get("soft_block", 0),
+        "watchdog_restarts": kinds.get("watchdog_restart", 0),
+        "server_starts": kinds.get("server_start", 0),
+        "avg_daily_bot_runtime": int(bot_total / days),
+        "avg_daily_scraper_runtime": int(scr_total / days),
+        "observed_days": round(days, 1),
+        "bot_uptime_pct": round(100 * bot_total / span, 1) if span else None,
+        "downtime_total": int(max(0.0, span - bot_total)),
+        "last_error": next((e["detail"] for e in reversed(events)
+                            if e["kind"] in ("error", "scraper_error")), None),
+        "last_checkpoint": next((e["timestamp"] for e in reversed(events)
+                                 if e["kind"] == "checkpoint"), None),
+    }
+
+    today = {}
+    try:
+        L = _json.loads(bot.DAILY_COUNTS.read_text(encoding="utf-8"))
+        if L.get("date") == time.strftime("%Y-%m-%d"):
+            today = {"follows": L.get("follows", 0), "unfollows": L.get("unfollows", 0),
+                     "likes": L.get("likes", 0), "caps": L.get("caps", {})}
+    except Exception:
+        pass
+
+    return {
+        "totals": totals, "rates": rates, "daily": daily_list, "growth": growth,
+        "fail_reasons": reason_counts(f_failed + failed),
+        "skip_reasons": reason_counts(f_skipped),
+        "reject_reasons": reason_counts(rejected),
+        "runtime": runtime, "today": today,
+    }
 
 
 @app.get("/api/activity")

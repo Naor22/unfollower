@@ -37,6 +37,8 @@ SCRAPER_STATUS = DATA_DIR / "scraper_status.json"   # separate scraper service h
 SCRAPER_PID = DATA_DIR / "scraper.pid"              # so the server can track/stop the scraper
 DAILY_COUNTS = DATA_DIR / "daily_counts.json"       # real per-CALENDAR-DAY action ledger (ban safety)
 BOT_RUNTIME = DATA_DIR / "bot_runtime.json"         # bot "acting" signal so the scraper yields the Pi
+ACCOUNT_HISTORY = DATA_DIR / "account_history.log"  # ts/followers/following time-series (growth graph)
+RUNTIME_EVENTS = DATA_DIR / "runtime_events.log"    # lifecycle: starts/stops/errors/restarts (analytics)
 ACTIVITY_LOG = DATA_DIR / "activity.json"   # shared live-activity feed (all devices)
 ACTIVITY_MAX = 1000                          # ring buffer cap (auto-cleanup)
 
@@ -542,6 +544,43 @@ def append_log(path: Path, line: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def append_event(kind: str, detail: str = "") -> None:
+    """Record a lifecycle event (bot/scraper start/stop, error, restart, checkpoint,
+    soft_block) to runtime_events.log for the analytics page."""
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        append_log(RUNTIME_EVENTS, f"{ts}\t{kind}\t{detail}")
+    except Exception:
+        pass
+
+
+def read_runtime_events() -> list[dict]:
+    if not RUNTIME_EVENTS.exists():
+        return []
+    rows = []
+    for line in RUNTIME_EVENTS.read_text(encoding="utf-8").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            rows.append({"timestamp": parts[0], "kind": parts[1],
+                         "detail": parts[2] if len(parts) > 2 else ""})
+    return rows
+
+
+def read_account_history() -> list[dict]:
+    if not ACCOUNT_HISTORY.exists():
+        return []
+    rows = []
+    for line in ACCOUNT_HISTORY.read_text(encoding="utf-8").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            try:
+                rows.append({"timestamp": parts[0],
+                             "followers": int(parts[1]), "following": int(parts[2])})
+            except ValueError:
+                continue
+    return rows
 
 
 # ---------- Bot ----------
@@ -2150,7 +2189,13 @@ class Bot:
         if fields:
             self.state.update(**fields)
             snap = self.state.snapshot()
-            write_account_stats(snap.get("account_followers"), snap.get("account_following"))
+            f, g = snap.get("account_followers"), snap.get("account_following")
+            write_account_stats(f, g)
+            # Append to the growth time-series (throttled to ~30 min so it stays small).
+            if f is not None and g is not None and \
+                    time.time() - getattr(self, "_last_history_write", 0) > 1800:
+                self._last_history_write = time.time()
+                append_log(ACCOUNT_HISTORY, f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{f}\t{g}")
         self._actions_since_resync = 0
 
     def fetch_account_now(self) -> bool:
@@ -2376,6 +2421,7 @@ class Bot:
                                             "msg": "burner not logged in — run scraper_login.py"})
                     return
                 self.state.emit("log", {"level": "info", "msg": "burner logged in — starting"})
+                append_event("scraper_start")
                 while not self._stop_event.is_set():
                     day_cfg = load_config()
                     scr = day_cfg.get("scraper", {}) or {}
@@ -2425,8 +2471,10 @@ class Bot:
                     self._interruptible_sleep(idle * random.uniform(0.85, 1.15))
         except Exception as e:
             self._write_scraper_status(error=str(e))
+            append_event("scraper_error", str(e)[:200])
         finally:
             self._write_scraper_status(phase="stopped")
+            append_event("scraper_stop")
             try:
                 if scraper_pid() == os.getpid():
                     SCRAPER_PID.unlink()
@@ -3147,6 +3195,7 @@ class Bot:
         Returns 'block' (stop the run) or 'cooldown' (backed off, resume)."""
         pacing = cfg.get("pacing", {}) or {}
         n = self._record_soft_block(cfg)
+        append_event("soft_block", f"#{n} today")
         if n >= int(pacing.get("soft_block_max_per_day", 2)):
             self.state.update(phase_detail=f"{n} soft-blocks today — stopping for the day")
             return "block"
@@ -4277,6 +4326,7 @@ class Bot:
 
             cfg = load_config()
             mode = (cfg.get("mode") or "unfollow").lower()
+            append_event("bot_start", mode)
             whitelist = load_whitelist()
             DATA_DIR.mkdir(exist_ok=True)
             pacing = cfg["pacing"]
@@ -4527,6 +4577,7 @@ class Bot:
                         )
                         self.state.emit("log", {"level": "error",
                             "msg": "checkpoint/challenge detected — hard stop (no retries)"})
+                        append_event("checkpoint")
                         break
                     if outcome == "block":
                         self.state.update(
@@ -4598,8 +4649,14 @@ class Bot:
             )
         except Exception as e:
             self.state.update(status="error", error=str(e), next_action_at=None)
+            append_event("error", str(e)[:200])
         finally:
             self._set_acting(False)   # bot stopped → scraper free to run
+            try:
+                st = self.state.snapshot().get("status")
+                append_event("bot_stop", "stopped" if self._stop_event.is_set() else (st or ""))
+            except Exception:
+                pass
             # Always tear down the background story worker when the run ends.
             self._story_stop.set()
             self._story_worker_active = False
