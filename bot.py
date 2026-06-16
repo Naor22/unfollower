@@ -80,7 +80,7 @@ class StateManager:
     receive messages via asyncio queues attached to the FastAPI event loop.
     """
 
-    def __init__(self, persist_events: bool = True) -> None:
+    def __init__(self, persist_events: bool = True, log_stdout: bool = False) -> None:
         self._lock = threading.Lock()
         self._state = BotState()
         self._subscribers: list = []
@@ -90,6 +90,10 @@ class StateManager:
         # processes writing the same file would corrupt the feed. persist_events=
         # False keeps emit/update working (in-memory) without disk I/O.
         self._persist = persist_events
+        # The scraper has no WS subscribers, so its emit() would be invisible.
+        # log_stdout=True mirrors emitted 'log' events to stdout, so the foreground
+        # run and `journalctl -u unfollower-scraper` actually show progress.
+        self._log_stdout = log_stdout
         # Liveness marker for the watchdog. Bumped on every state update/emit AND
         # on every interruptible-sleep tick, so legitimate long sleeps (cooldowns,
         # daily loop) keep it fresh while a genuine hang (e.g. a frozen Playwright
@@ -134,6 +138,9 @@ class StateManager:
         if self._persist and self._events_since_save >= 25:
             self._events_since_save = 0
             self._save_events()
+        if self._log_stdout and event_type == "log":
+            lvl = (payload.get("level") or "info").upper()
+            print(f"[{payload.get('_time')}] {lvl}: {payload.get('msg', '')}", flush=True)
         self._broadcast(msg)
 
     # ---- shared activity feed (disk-backed, capped) ----
@@ -2043,7 +2050,8 @@ class Bot:
         following) are NOT applied here — the burner can't judge them; the core
         bot handles those via its done-set + follow-time check."""
         try:
-            page.goto(f"https://www.instagram.com/{target}/", wait_until="domcontentloaded")
+            page.goto(f"https://www.instagram.com/{target}/",
+                      wait_until="domcontentloaded", timeout=20000)
             page.wait_for_selector("header", timeout=12000)
         except Exception:
             return "unavailable"
@@ -2077,6 +2085,8 @@ class Bot:
                 and c["username"] not in checked
                 and c["username"] not in rejected]
 
+        self.state.emit("log", {"level": "info",
+                                "msg": f"filtering {len(todo)} candidate(s)"})
         self._write_scraper_status(phase=f"filtering {len(todo)} candidate(s)")
         processed = 0
         for u in todo:
@@ -2095,8 +2105,12 @@ class Bot:
                 append_log(rejected_log, f"{ts}\t{u}\t{reason}")
                 rejected.add(u)
             processed += 1
-            if processed % 10 == 0:
-                self._write_scraper_status(phase=f"filtered {processed}/{len(todo)}")
+            self.state.emit("log", {"level": "info",
+                "msg": f"[{processed}/{len(todo)}] @{u} → "
+                       f"{'KEEP' if reason is None else 'reject (' + reason + ')'}"})
+            # Update the dashboard status every profile so it stays live (the JSON
+            # write is cheap; this also keeps the 'running' heartbeat fresh).
+            self._write_scraper_status(phase=f"filtered {processed}/{len(todo)}")
             self._jitter(min_d, max_d)
             if long_every and processed % long_every == 0:
                 self._interruptible_sleep(random.uniform(long_min, long_max))
@@ -2142,9 +2156,12 @@ class Bot:
                 browser, context, page, using_cdp, using_persistent = self._connect(p, browser_cfg)
                 if not self._is_logged_in(page):
                     self._write_scraper_status(
-                        error="scraper Chrome is not logged in — log the burner account "
-                              "in once on the 2nd Chrome (port 9223), then restart")
+                        error="scraper Chrome is not logged in — run scraper_login.py "
+                              "to log the burner account in, then restart")
+                    self.state.emit("log", {"level": "error",
+                                            "msg": "burner not logged in — run scraper_login.py"})
                     return
+                self.state.emit("log", {"level": "info", "msg": "burner logged in — starting"})
                 while not self._stop_event.is_set():
                     day_cfg = load_config()
                     scr = day_cfg.get("scraper", {}) or {}

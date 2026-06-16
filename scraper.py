@@ -22,8 +22,10 @@ import bot
 def main() -> None:
     # persist_events=False: this process must NOT write the shared activity.json
     # (the server's StateManager owns it) — two writers would corrupt the feed.
-    sm = bot.StateManager(persist_events=False)
+    # log_stdout=True: mirror progress to stdout for the foreground run + journalctl.
+    sm = bot.StateManager(persist_events=False, log_stdout=True)
     b = bot.Bot(sm)
+    print("[*] scraper service starting…", flush=True)
 
     def _shutdown(signum, frame):
         b._stop_event.set()
