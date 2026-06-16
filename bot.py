@@ -553,6 +553,8 @@ class Bot:
         self._pause_event = threading.Event()  # set = paused
         self._lock = threading.Lock()
         self._me = ""  # logged-in handle; set in _run, used by the modal fallback
+        self._run_skip = set()  # accounts that hard-failed THIS run — skip so one
+                                # poison profile can't jam the queue every batch
         self._actions_since_resync = 0  # drives periodic account-count re-sync
         self._story_tick = 0            # interleaved story-reach: actions since last view
         self._story_today = 0           # stories viewed this batch (vs daily cap)
@@ -3494,7 +3496,8 @@ class Bot:
         whitelist = load_whitelist()
         done_set = {row["username"].lower() for row in read_unfollowed_log()}
         done_set |= {row["username"].lower() for row in read_skipped_log()}
-        targets = [u for u in following if u not in whitelist and u not in done_set]
+        targets = [u for u in following if u not in whitelist and u not in done_set
+                   and u not in self._run_skip]
 
         if set_gauge:
             self.state.update(
@@ -3589,6 +3592,7 @@ class Bot:
                 continue
             else:
                 append_log(failed_log, f"{ts}\t{target}\t{result}")
+                self._run_skip.add(target)   # don't re-attempt this run (poison guard)
                 new_failed = self.state.snapshot()["failed_count"] + 1
                 consecutive_errors += 1
                 self.state.update(failed_count=new_failed, last_message=f"failed @{target}: {result}")
@@ -3692,7 +3696,9 @@ class Bot:
         attempts = 0             # accounts touched this call (for the batch limit)
         consecutive_errors = 0
         rate_limit_hits = 0
-        seen: set[str] = set()   # attempted this call (so a failure isn't retried in-loop)
+        # Seed from the run-wide skip set so a poison account that hard-failed
+        # earlier this run isn't re-attempted every interleaved batch.
+        seen: set[str] = set(self._run_skip)
 
         # follow_candidates is the ELIGIBLE result list (scraper-vetted, or self-
         # scraped when no external scraper). We re-read it every follow so newly-
@@ -3798,6 +3804,7 @@ class Bot:
                 continue
             else:
                 append_log(failed_log, f"{ts}\t{target}\t{result}")
+                self._run_skip.add(target)   # don't re-attempt this run (poison guard)
                 new_failed = self.state.snapshot()["follow_failed_count"] + 1
                 consecutive_errors += 1
                 self.state.update(follow_failed_count=new_failed,
@@ -3955,7 +3962,7 @@ class Bot:
         due, seen = [], set()
         for row in read_followed_log():
             u = row["username"].lower()
-            if u in resolved or u in whitelist or u in seen:
+            if u in resolved or u in whitelist or u in seen or u in self._run_skip:
                 continue
             ts = parse_log_ts(row["timestamp"])
             if ts is None or (now - ts) < cutoff:
@@ -4060,6 +4067,7 @@ class Bot:
                     return "stopped"
             else:
                 append_log(failed_log, f"{ts}\t{u}\tchurn:{result}")
+                self._run_skip.add(u)   # don't re-attempt this run (poison guard)
                 consecutive_errors += 1
                 self.state.emit("follow_failed", {"timestamp": ts, "username": u, "reason": f"churn:{result}"})
                 self.state.update(last_message=f"churn failed @{u}: {result}")
@@ -4075,33 +4083,15 @@ class Bot:
 
     _WEBDRIVER_MASK = "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
 
-    def _route_block_heavy(self, route):
-        """Abort image/media/font requests to slash page-load time + Chrome RAM
-        (IG pages are image/video-heavy; we only need header text, buttons, and the
-        action bar). Likes/stories/counts don't need pixels, so this is safe. Keeps
-        document/script/xhr/stylesheet so the SPA still works."""
-        try:
-            if route.request.resource_type in ("image", "media", "font"):
-                return route.abort()
-            return route.continue_()
-        except Exception:
-            try:
-                return route.continue_()
-            except Exception:
-                return None
-
     def _setup_context(self, context, browser_cfg):
-        """Shared post-creation hardening: webdriver mask + (optional) heavy-request
-        blocking. Applied to every connection model."""
+        """Shared post-creation hardening: webdriver mask. (Image blocking is done
+        via a native Chromium launch flag instead of per-request routing — routing
+        every request through Python is too slow on the Pi and was causing header
+        load timeouts.)"""
         try:
             context.add_init_script(self._WEBDRIVER_MASK)
         except Exception:
             pass
-        if browser_cfg.get("block_media", True):
-            try:
-                context.route("**/*", self._route_block_heavy)
-            except Exception:
-                pass
 
     def _connect(self, p, browser_cfg):
         """Open/attach a browser per config and return
@@ -4124,6 +4114,11 @@ class Bot:
             "--no-sandbox",   # required when running as a service on the Pi
             "--disable-gpu",  # headless Pi has no GPU/display; silences ANGLE/EGL errors
         ]
+        # Block images natively (no per-request Python overhead) — big speed/RAM win
+        # on the Pi. Only for launched browsers; a user-launched CDP Chrome must set
+        # this flag itself. We need only header text/buttons/action-bar, not pixels.
+        if browser_cfg.get("block_media", True):
+            launch_args.append("--blink-settings=imagesEnabled=false")
 
         def _browser_binary(kwargs: dict) -> None:
             # On ARM/Pi, use the distro Chromium via executable_path or channel.
@@ -4210,6 +4205,7 @@ class Bot:
             username = os.getenv("IG_USERNAME")
             password = os.getenv("IG_PASSWORD")
             self._me = (username or "").lstrip("@").lower()
+            self._run_skip = set()   # fresh each run; poison accounts get another chance next run
             if not username or not password:
                 self.state.update(status="error", error="IG_USERNAME / IG_PASSWORD not set")
                 return
