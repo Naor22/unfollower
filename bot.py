@@ -2412,15 +2412,44 @@ class Bot:
             self._write_scraper_status(phase="starting")
 
             with sync_playwright() as p:
-                browser, context, page, using_cdp, using_persistent = self._connect(p, browser_cfg)
-                if not self._is_logged_in(page):
-                    self._write_scraper_status(
-                        error="scraper Chrome is not logged in — run scraper_login.py "
-                              "to log the burner account in, then restart")
-                    self.state.emit("log", {"level": "error",
-                                            "msg": "burner not logged in — run scraper_login.py"})
-                    return
-                self.state.emit("log", {"level": "info", "msg": "burner logged in — starting"})
+                # Lazy browser: the scraper's Chrome is open ONLY while it's actively
+                # scraping/vetting, and fully closed whenever it's paused (bot active,
+                # pool full, disabled). True mutual exclusion with the main bot.
+                conn = {"browser": None, "context": None, "page": None,
+                        "cdp": False, "persistent": False, "ok": False}
+
+                def ensure_connected():
+                    if conn["ok"]:
+                        return conn["page"]
+                    b, c, pg, ucdp, upers = self._connect(p, browser_cfg)
+                    conn.update(browser=b, context=c, page=pg, cdp=ucdp, persistent=upers, ok=True)
+                    if not self._is_logged_in(pg):
+                        self._write_scraper_status(
+                            error="scraper Chrome is not logged in — run scraper_login.py "
+                                  "to log the burner account in")
+                        self.state.emit("log", {"level": "error",
+                                                "msg": "burner not logged in — run scraper_login.py"})
+                        disconnect()
+                        return None
+                    return pg
+
+                def disconnect():
+                    if not conn["ok"]:
+                        return
+                    try:
+                        if conn["persistent"]:
+                            conn["context"].close()
+                        elif not conn["cdp"]:
+                            conn["browser"].close()
+                        else:
+                            try:
+                                conn["page"].close()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    conn.update(browser=None, context=None, page=None, ok=False)
+
                 append_event("scraper_start")
                 while not self._stop_event.is_set():
                     day_cfg = load_config()
@@ -2428,6 +2457,7 @@ class Bot:
                     idle = float(scr.get("idle_seconds", 600))
                     # Dashboard pause switch: keep the service alive but idle.
                     if not scr.get("enabled", False):
+                        disconnect()
                         self._write_scraper_status(phase="disabled (toggle off)")
                         self._interruptible_sleep(30)
                         continue
@@ -2439,15 +2469,22 @@ class Bot:
                     high = max(1, daily_cap * int(scr.get("pool_high_mult", 5)))
                     ready = self._pool_ready(day_cfg)
                     if coordinate and self._bot_is_acting():
+                        disconnect()   # bot is working → free the Pi, close our Chrome
                         self._write_scraper_status(phase=f"idle — bot active (pool ready {ready}/{high})")
                         self._interruptible_sleep(60)
                         continue
                     if ready >= high:
+                        disconnect()
                         self._write_scraper_status(phase=f"pool full — {ready} ready (≥ {high}); idle")
                         self._interruptible_sleep(idle)
                         continue
-                    # 1. scrape raw usernames into the TODO backlog (exclude anything
-                    #    already vetted into the result list or already rejected).
+
+                    # --- ACTIVE: bring up the burner browser and do a pass ---
+                    page = ensure_connected()
+                    if page is None:
+                        self._interruptible_sleep(30)   # not logged in — retry later
+                        continue
+                    # 1. scrape raw usernames into the TODO backlog.
                     self._write_scraper_status(phase="scraping sources")
                     try:
                         exclude = {c["username"] for c in read_follow_candidates()}
@@ -2462,13 +2499,15 @@ class Bot:
                         self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
                     if self._stop_event.is_set():
                         break
-                    # 2. browser-vet the backlog into the eligible result list
+                    # 2. browser-vet the backlog into the eligible result list.
                     self._filter_pool(page, day_cfg)
                     if self._stop_event.is_set():
                         break
-                    # 3. idle until the next pass (keeps the pool topped + clean)
+                    # 3. idle until the next pass → close the browser, free the Pi.
+                    disconnect()
                     self._write_scraper_status(phase="idle")
                     self._interruptible_sleep(idle * random.uniform(0.85, 1.15))
+                disconnect()
         except Exception as e:
             self._write_scraper_status(error=str(e))
             append_event("scraper_error", str(e)[:200])
@@ -4352,120 +4391,96 @@ class Bot:
             )
 
             with sync_playwright() as p:
-                browser, context, page, using_cdp, using_persistent = self._connect(p, browser_cfg)
+                # The browser is brought up only while the bot is ACTIVELY working and
+                # fully torn down whenever it goes idle (warm-up wait, day-cap sleep,
+                # off-hours, between cycles). That frees the Pi entirely for the
+                # scraper during the bot's dead time — true mutual exclusion, so the
+                # two Chromes never contend. conn holds the live handles.
+                conn = {"browser": None, "context": None, "page": None,
+                        "cdp": False, "persistent": False, "ok": False}
+                did_warmup = [False]
+                following: list[str] = []   # unfollow-mode list, loaded lazily
 
-                if self._stop_event.is_set():
-                    raise _Stopped()
-
-                if self._is_logged_in(page):
-                    self.state.update(phase_detail="reusing saved session")
-                elif using_persistent:
-                    # Permanent-profile mode never auto-logs-in with credentials
-                    # (a headless first login would hit 2FA/captcha). Log in once
-                    # on the Pi instead — see DEPLOY.md.
-                    raise RuntimeError(
-                        "Not logged in on this profile. Log into Instagram once on "
-                        "the Pi (DEPLOY.md 'permanent login'), then restart."
-                    )
-                else:
-                    self._login(page, username, password)
+                def ensure_connected():
+                    if conn["ok"]:
+                        return conn["page"]
+                    self.state.update(phase_detail=f"launching browser ({mode} mode)")
+                    b, c, pg, ucdp, upers = self._connect(p, browser_cfg)
+                    conn.update(browser=b, context=c, page=pg, cdp=ucdp, persistent=upers, ok=True)
                     if self._stop_event.is_set():
                         raise _Stopped()
-                    if not using_cdp:
-                        context.storage_state(path=str(SESSION_PATH))
-
-                # Seed the account status bar as soon as we're logged in, before
-                # warmup/scrape, so the followers/following show right away.
-                self._refresh_account_counts(page)
-
-                # Start the concurrent background story-reach worker (CDP only — it
-                # opens its own independent connection + tab to the same Chrome and
-                # runs on its own cadence, regardless of what the main loop does).
-                # Default OFF: the separate-tab worker needs a 2nd CDP connection
-                # which proved flaky. Reach runs reliably in the main loop instead
-                # (interleaved every story_reach_every_actions actions). Opt in with
-                # story_reach_background: true to use the concurrent tab.
-                eng_cfg0 = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
-                if eng_cfg0.get("story_reach_enabled", False):
-                    if using_cdp and eng_cfg0.get("story_reach_background", False):
-                        self._story_stop.clear()
-                        self._story_worker_active = True
-                        self._story_thread = threading.Thread(
-                            target=self._story_worker_loop, daemon=True)
-                        self._story_thread.start()
-                        self.state.emit("log", {"level": "info",
-                                                "msg": "reach worker started (background tab)"})
+                    if self._is_logged_in(pg):
+                        self.state.update(phase_detail="reusing saved session")
+                    elif upers:
+                        raise RuntimeError(
+                            "Not logged in on this profile. Log into Instagram once on "
+                            "the Pi (DEPLOY.md 'permanent login'), then restart.")
                     else:
-                        # In-loop reach (default). Confirm it's on so it's not a guess.
-                        src = (eng_cfg0.get("reach_source") or "hashtags").lower()
-                        if src == "hashtags":
-                            srcs = (cfg.get("follow", {}) or {}).get("sources", {}) or {}
-                            tags = [t for t in (eng_cfg0.get("reach_hashtags")
-                                                or srcs.get("hashtags") or []) if t]
-                            if tags:
-                                self.state.emit("log", {"level": "info",
-                                    "msg": f"reach enabled (in-loop, hashtags) — {len(tags)} tag(s) loaded"})
-                            else:
-                                self.state.emit("log", {"level": "error",
-                                    "msg": "reach is ON but NO hashtags configured — add some in "
-                                           "Sources → Hashtags, otherwise it has nothing to like"})
-                        else:
-                            try:
-                                qn = len(self._build_story_queue())
-                            except Exception:
-                                qn = 0
-                            self.state.emit("log", {"level": "info",
-                                "msg": f"reach enabled (in-loop, pool) — {qn} candidates "
-                                       "(note: many strangers are private and can't be liked)"})
+                        self._login(pg, username, password)
+                        if self._stop_event.is_set():
+                            raise _Stopped()
+                        if not ucdp:
+                            c.storage_state(path=str(SESSION_PATH))
+                    self._refresh_account_counts(pg)
+                    # One-time human warmup browse, only on the first connect.
+                    if not did_warmup[0]:
+                        did_warmup[0] = True
+                        ws = behavior.get("warmup_browse_seconds", 0)
+                        if ws > 0:
+                            self.state.update(status="warmup", phase_detail=f"browsing feed for {ws}s")
+                            loaded = False
+                            for attempt in range(2):
+                                try:
+                                    pg.goto("https://www.instagram.com/",
+                                            wait_until="domcontentloaded", timeout=60000)
+                                    loaded = True
+                                    break
+                                except Exception as e:
+                                    self.state.emit("log", {"level": "info",
+                                        "msg": f"warmup load slow ({type(e).__name__}); "
+                                               f"{'retrying' if attempt == 0 else 'skipping warmup'}"})
+                                    if self._stop_event.is_set():
+                                        raise _Stopped()
+                            if loaded:
+                                end = time.time() + ws
+                                while time.time() < end and not self._stop_event.is_set():
+                                    self._random_mouse(pg)
+                                    try:
+                                        pg.mouse.wheel(0, random.randint(200, 700))
+                                    except Exception:
+                                        pass
+                                    time.sleep(random.uniform(1.5, 4.0))
+                    return pg
 
-                ws = behavior.get("warmup_browse_seconds", 0)
-                if ws > 0:
-                    self.state.update(status="warmup", phase_detail=f"browsing feed for {ws}s")
-                    # Warmup is cosmetic (look human) — a slow/contended Chrome (e.g.
-                    # the Pi running a 2nd browser for the scraper) must NOT crash the
-                    # run here. Retry the load with a longer timeout, then skip if it
-                    # still won't load; the real actions have their own handling.
-                    loaded = False
-                    for attempt in range(2):
-                        try:
-                            page.goto("https://www.instagram.com/",
-                                      wait_until="domcontentloaded", timeout=60000)
-                            loaded = True
-                            break
-                        except Exception as e:
-                            self.state.emit("log", {"level": "info",
-                                "msg": f"warmup load slow ({type(e).__name__}); "
-                                       f"{'retrying' if attempt == 0 else 'skipping warmup'}"})
-                            if self._stop_event.is_set():
-                                raise _Stopped()
-                    if loaded:
-                        end = time.time() + ws
-                        while time.time() < end and not self._stop_event.is_set():
-                            self._random_mouse(page)
+                def disconnect():
+                    if not conn["ok"]:
+                        return
+                    try:
+                        if conn["persistent"]:
+                            conn["context"].close()   # frees Chromium + persists the profile
+                        elif not conn["cdp"]:
                             try:
-                                page.mouse.wheel(0, random.randint(200, 700))
+                                conn["context"].storage_state(path=str(SESSION_PATH))
                             except Exception:
                                 pass
-                            time.sleep(random.uniform(1.5, 4.0))
-                    if self._stop_event.is_set():
-                        raise _Stopped()
+                            conn["browser"].close()
+                        else:
+                            try:
+                                conn["page"].close()   # CDP Chrome is user-owned; close our tab
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    conn.update(browser=None, context=None, page=None, ok=False)
 
-                # The cache (data/following.json) is stored OLDEST-FIRST — either
-                # produced by import_following.py from Instagram's data export
-                # (sorted by true follow date) or by a fresh scrape below. We use
-                # it in that order directly, no reverse. Only the unfollow mode
-                # needs it; follow/churn pull from the candidate pool instead.
-                following: list[str] = []
-                if mode == "unfollow":
-                    if behavior.get("use_following_cache", True) and FOLLOWING_CACHE.exists():
-                        following = json.loads(FOLLOWING_CACHE.read_text(encoding="utf-8"))
-                        self.state.update(phase_detail=f"loaded {len(following)} from cache")
-                    else:
-                        scraped = self._scrape_following(page, username)
-                        scraped.reverse()  # scrape returns newest-first -> store oldest-first
-                        following = scraped
-                        FOLLOWING_CACHE.write_text(json.dumps(following, indent=2), encoding="utf-8")
-                        self.state.emit("following_cached", {"count": len(following)})
+                # Reach-enabled confirmation log (no browser needed).
+                eng_cfg0 = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
+                if eng_cfg0.get("story_reach_enabled", False):
+                    srcs = (cfg.get("follow", {}) or {}).get("sources", {}) or {}
+                    tags = [t for t in (eng_cfg0.get("reach_hashtags") or srcs.get("hashtags") or []) if t]
+                    self.state.emit("log", {"level": "info" if tags else "error",
+                        "msg": (f"reach enabled (in-loop) — {len(tags)} hashtag(s) loaded" if tags
+                                else "reach is ON but NO hashtags configured — add some in Sources → Hashtags")})
 
                 daily_loop = bool(behavior.get("daily_loop", False))
                 loop_hours = float(pacing.get("daily_loop_hours", 24))
@@ -4476,24 +4491,12 @@ class Bot:
                     day_cfg = load_config()
                     pacing = day_cfg["pacing"]
 
-                    # Verify the session is still valid each day; if it lapsed,
-                    # persistent mode needs a re-login on the Pi, copy-session
-                    # mode needs a fresh session.json (export_session.py).
-                    if not using_cdp and not self._is_logged_in(page):
-                        fix = ("log into Instagram again on the Pi profile"
-                               if using_persistent
-                               else "refresh session.json (run export_session.py)")
-                        self.state.update(
-                            status="error", current_target=None, next_action_at=None,
-                            error=f"Instagram session expired — {fix}.",
-                        )
-                        break
-
-                    # --- ban-safety gates (before doing any work) ---
+                    # --- ban-safety gates (NO browser needed → keep the bot's Chrome
+                    #     CLOSED so the scraper gets the whole Pi) ---
                     # Outside the configured active hours → sleep until the window opens.
                     gate_secs = self._seconds_until_active(day_cfg)
                     if gate_secs > 0:
-                        self._set_acting(False)   # dead time → scraper may run
+                        disconnect(); self._set_acting(False)
                         self.state.update(
                             status="sleeping", current_target=None,
                             phase_detail=f"outside active hours — resuming in ~{gate_secs / 3600:.1f}h",
@@ -4503,7 +4506,7 @@ class Bot:
                         continue
                     # Hit today's caps → sleep to the next local day (caps re-roll then).
                     if self._day_capped_for_mode(day_cfg, mode):
-                        self._set_acting(False)   # done for the day → scraper's prime time
+                        disconnect(); self._set_acting(False)
                         gate_secs = self._seconds_until_tomorrow()
                         self.state.update(
                             status="sleeping", current_target=None,
@@ -4515,15 +4518,13 @@ class Bot:
 
                     # Warm-up gate (one-time at start): with an external scraper, don't
                     # begin working until the ready pool holds at least a full daily cap.
-                    # Stay fully idle so the scraper (which only runs in our dead-time)
-                    # fills it first. Once filled, we mark warmed and run normally — the
-                    # scraper keeps it topped up (to pool_high_mult × cap) in our gaps.
+                    # Stay fully idle (browser CLOSED) so the scraper fills it first.
                     if (not self._warmed and mode in ("follow", "churn")
                             and (day_cfg.get("follow", {}) or {}).get("external_scraper", False)):
                         cap = int((day_cfg.get("follow", {}) or {}).get("daily_cap", 30))
                         ready = self._pool_ready(day_cfg)
                         if ready < cap:
-                            self._set_acting(False)   # hand the Pi to the scraper
+                            disconnect(); self._set_acting(False)
                             self.state.update(
                                 status="sleeping", current_target=None,
                                 phase_detail=f"warming up — scraper filling the pool ({ready}/{cap})",
@@ -4534,14 +4535,31 @@ class Bot:
                         self.state.emit("log", {"level": "info",
                             "msg": f"pool warmed up ({ready} ready ≥ {cap}) — starting"})
 
-                    self._set_acting(True)   # entering an active cycle → scraper pauses
+                    # --- ACTIVE: bring the browser up, verify the session, then work ---
+                    self._set_acting(True)   # scraper pauses + closes its Chrome
+                    page = ensure_connected()
+                    # Session still valid? (only meaningful for non-CDP models)
+                    if not conn["cdp"] and not self._is_logged_in(page):
+                        fix = ("log into Instagram again on the Pi profile"
+                               if conn["persistent"]
+                               else "refresh session.json (run export_session.py)")
+                        self.state.update(status="error", current_target=None,
+                                          next_action_at=None,
+                                          error=f"Instagram session expired — {fix}.")
+                        break
+                    # Lazy-load the following list for unfollow mode (needs the page).
+                    if mode == "unfollow" and not following:
+                        if behavior.get("use_following_cache", True) and FOLLOWING_CACHE.exists():
+                            following = json.loads(FOLLOWING_CACHE.read_text(encoding="utf-8"))
+                            self.state.update(phase_detail=f"loaded {len(following)} from cache")
+                        else:
+                            scraped = self._scrape_following(page, username)
+                            scraped.reverse()
+                            following = scraped
+                            FOLLOWING_CACHE.write_text(json.dumps(following, indent=2), encoding="utf-8")
+                            self.state.emit("following_cached", {"count": len(following)})
 
-                    # Seed/re-sync our own follower & following counts for the
-                    # status bar at the start of every batch (per-action ±1 keeps
-                    # it live between these full fetches).
-                    self._refresh_account_counts(page)
-                    # Reset the interleaved story-reach budget for this batch (it
-                    # runs inside every mode's loop now, not as a churn-only phase).
+                    # (account counts already refreshed on connect in ensure_connected)
                     self._reset_story_reach()
 
                     if mode == "follow":
@@ -4558,11 +4576,10 @@ class Bot:
                         )
 
                     # Copy-session mode: persist refreshed cookies so the session
-                    # survives restarts. Persistent mode saves to its profile dir
-                    # automatically, so nothing to do there.
-                    if not using_cdp and not using_persistent:
+                    # survives restarts. (Persistent/CDP need nothing here.)
+                    if conn["ok"] and not conn["cdp"] and not conn["persistent"]:
                         try:
-                            context.storage_state(path=str(SESSION_PATH))
+                            conn["context"].storage_state(path=str(SESSION_PATH))
                         except Exception:
                             pass
 
@@ -4611,7 +4628,8 @@ class Bot:
                     wake = time.time() + sleep_s
                     human = (f"~{sleep_s / 60:.0f}m" if sleep_s < 3600
                              else f"~{sleep_s / 3600:.1f}h")
-                    self._set_acting(False)   # between cycles → scraper may run
+                    # Going idle between cycles → CLOSE the browser, free the Pi.
+                    disconnect(); self._set_acting(False)
                     self.state.update(
                         status="sleeping", current_target=None,
                         phase_detail=f"{note}; next cycle in {human}",
@@ -4620,17 +4638,7 @@ class Bot:
                     self._interruptible_sleep(sleep_s)
                     self.state.update(next_action_at=None)
 
-                if using_persistent:
-                    try:
-                        context.close()  # persists the profile to disk
-                    except Exception:
-                        pass
-                elif not using_cdp:
-                    try:
-                        context.storage_state(path=str(SESSION_PATH))
-                    except Exception:
-                        pass
-                    browser.close()
+                disconnect()   # run ended → tear the browser down
 
             # Don't clobber an error/block status set inside the loop.
             if self.state.snapshot()["status"] != "error":
