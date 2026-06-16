@@ -1226,7 +1226,7 @@ class Bot:
         return out[:cap]
 
     def _scrape_candidates(self, page, cfg, pool_read=None, pool_write=None,
-                           extra_exclude=None) -> int:
+                           extra_exclude=None, on_progress=None) -> int:
         """Run every configured source, dedup against the follow done-set + the
         existing pool (+ extra_exclude), and append new usernames. Stops early once
         the pending pool reaches candidate_pool_min. Returns the count added.
@@ -1254,12 +1254,19 @@ class Bot:
 
         def ingest(users, source):
             nonlocal added
+            before = added
             for u in users:
                 if u in done or u in existing:
                     continue
                 existing.add(u)
                 pool.append({"username": u, "source": source})
                 added += 1
+            # Flush after each source so the pool/backlog grows live (and the
+            # scraper's status heartbeat updates) instead of only at the very end.
+            if added != before:
+                pool_write(pool)
+            if on_progress:
+                on_progress()
 
         for prof in sources.get("follower_profiles", []) or []:
             if self._stop_event.is_set() or pending_count() >= pool_min:
@@ -2242,10 +2249,12 @@ class Bot:
                     try:
                         exclude = {c["username"] for c in read_follow_candidates()}
                         exclude |= {r["username"] for r in read_filter_rejected_log()}
-                        self._scrape_candidates(page, day_cfg,
-                                                pool_read=read_scraper_todo,
-                                                pool_write=write_scraper_todo,
-                                                extra_exclude=exclude)
+                        self._scrape_candidates(
+                            page, day_cfg,
+                            pool_read=read_scraper_todo,
+                            pool_write=write_scraper_todo,
+                            extra_exclude=exclude,
+                            on_progress=lambda: self._write_scraper_status(phase="scraping sources"))
                     except Exception as e:
                         self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
                     if self._stop_event.is_set():
@@ -2529,18 +2538,21 @@ class Bot:
         self._jitter(1.0, 2.5) if lean else self._jitter(2.0, 4.5)
         self._random_mouse(page)
 
-        # Already following (or request pending)? Nothing to do.
+        # Already following (or request pending)? Nothing to do. (always — "I'm
+        # already following him" → skip.)
         if self._find_following_button(page) is not None:
             self._step(target, "already following", "neutral")
             return "already_following"
 
-        if not lean:
-            # They already follow us — skip if configured (no point spending a follow
-            # on someone already in our followers when the goal is net-new reach).
-            if filters.get("skip_already_follows_me", True) and self._follows_you(page):
-                self._step(target, "they already follow you — skip", "neutral")
-                return "skipped_follows_you"
+        # They already follow us → skip (no net-new reach). This is the ONE
+        # relationship check we always do, including lean mode, because the burner
+        # can't judge it — it's relative to the main account. Read from the header
+        # we already loaded, so it's nearly free.
+        if filters.get("skip_already_follows_me", True) and self._follows_you(page):
+            self._step(target, "they already follow you — skip", "neutral")
+            return "skipped_follows_you"
 
+        if not lean:
             if filters.get("skip_private", True) and self._is_private(page):
                 self._step(target, "private account — skip", "neutral")
                 return "skipped_private"
@@ -3952,15 +3964,32 @@ class Bot:
                 ws = behavior.get("warmup_browse_seconds", 0)
                 if ws > 0:
                     self.state.update(status="warmup", phase_detail=f"browsing feed for {ws}s")
-                    page.goto("https://www.instagram.com/", wait_until="domcontentloaded")
-                    end = time.time() + ws
-                    while time.time() < end and not self._stop_event.is_set():
-                        self._random_mouse(page)
+                    # Warmup is cosmetic (look human) — a slow/contended Chrome (e.g.
+                    # the Pi running a 2nd browser for the scraper) must NOT crash the
+                    # run here. Retry the load with a longer timeout, then skip if it
+                    # still won't load; the real actions have their own handling.
+                    loaded = False
+                    for attempt in range(2):
                         try:
-                            page.mouse.wheel(0, random.randint(200, 700))
-                        except Exception:
-                            pass
-                        time.sleep(random.uniform(1.5, 4.0))
+                            page.goto("https://www.instagram.com/",
+                                      wait_until="domcontentloaded", timeout=60000)
+                            loaded = True
+                            break
+                        except Exception as e:
+                            self.state.emit("log", {"level": "info",
+                                "msg": f"warmup load slow ({type(e).__name__}); "
+                                       f"{'retrying' if attempt == 0 else 'skipping warmup'}"})
+                            if self._stop_event.is_set():
+                                raise _Stopped()
+                    if loaded:
+                        end = time.time() + ws
+                        while time.time() < end and not self._stop_event.is_set():
+                            self._random_mouse(page)
+                            try:
+                                page.mouse.wheel(0, random.randint(200, 700))
+                            except Exception:
+                                pass
+                            time.sleep(random.uniform(1.5, 4.0))
                     if self._stop_event.is_set():
                         raise _Stopped()
 
