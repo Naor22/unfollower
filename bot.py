@@ -2433,11 +2433,13 @@ class Bot:
             return "private", meta
         return self._passes_filters(counts, filters), meta   # 'no_posts'/'filtered'/None
 
-    def _filter_pool(self, page, cfg) -> None:
+    def _filter_pool(self, page, cfg, target: int = None) -> None:
         """Vet the scraper_todo backlog. Each account: pass → append to the ELIGIBLE
         result list (follow_candidates, what the bot consumes); fail → rejected
         ledger. Either way it leaves the todo. Persists both lists atomically as it
-        goes, so the bot reads a clean eligible-only list with no comparison."""
+        goes, so the bot reads a clean eligible-only list with no comparison. Stops
+        once the eligible pool reaches `target` (default the follow high-water mark)
+        so it can hand the burner over to reach harvesting instead of over-filling."""
         follow_cfg = cfg.get("follow", {}) or {}
         filters = follow_cfg.get("filters", {}) or {}
         scr = cfg.get("scraper", {}) or {}
@@ -2467,18 +2469,20 @@ class Bot:
         self.state.emit("log", {"level": "info", "msg": f"vetting {len(pending)} candidate(s)"})
         self._write_scraper_status(phase=f"vetting {len(pending)}")
         coordinate = scr.get("coordinate_with_bot", True)
-        high = max(1, int(follow_cfg.get("daily_cap", 30)) * int(scr.get("pool_high_mult", 5)))
+        if target is None:
+            target = max(1, int(follow_cfg.get("daily_cap", 30)) * int(scr.get("pool_high_mult", 5)))
         processed = 0
         for c in todo:
             if self._stop_event.is_set():
                 break
             # Yield the Pi the instant the bot starts working, and stop once the
-            # ready pool reaches the high-water mark (checked every few profiles).
+            # ready pool reaches the target (checked every few profiles), so reach
+            # harvesting gets a turn instead of vetting all the way to high-water.
             if processed and processed % 3 == 0:
                 if coordinate and self._bot_is_acting():
                     self._write_scraper_status(phase="paused - bot became active")
                     break
-                if self._pool_ready(cfg) >= high:
+                if self._pool_ready(cfg) >= target:
                     break
             u = c["username"]
             if u in resolved or u in done or u in result_set:
@@ -2599,25 +2603,42 @@ class Bot:
                         self._interruptible_sleep(30)
                         continue
                     # Coordinate with the bot so they don't fight over the Pi: only
-                    # scrape during the bot's DEAD TIME, and only while a pool the bot
-                    # consumes is below its high-water mark (pool_high_mult × daily
-                    # figure). Idle once BOTH the follow and reach pools are full.
+                    # scrape during the bot's DEAD TIME. Two-stage fill - always bring
+                    # both pools to LOW-water (so the bot can start), but only build the
+                    # high-water buffer in the bot's downtime (outside active hours, or
+                    # once it's used today's room). Idle once both pools hit their target.
                     coordinate = scr.get("coordinate_with_bot", True)
                     mode = day_cfg.get("mode", "unfollow")
                     follow_cfg = day_cfg.get("follow", {}) or {}
                     eng = follow_cfg.get("engagement", {}) or {}
                     mult = int(scr.get("pool_high_mult", 5))
-                    # Fill whichever pool the bot will actually consume, up to the
-                    # high-water mark (mult × that pool's daily figure): the FOLLOW pool
+                    # Fill whichever pool the bot will actually consume: the FOLLOW pool
                     # only in follow/churn, the REACH pool only when reach is enabled.
                     follow_need = mode in ("follow", "churn")
-                    follow_high = max(1, int(follow_cfg.get("daily_cap", 30)) * mult)
+                    follow_low = int(follow_cfg.get("daily_cap", 30))
+                    follow_high = max(1, follow_low * mult)
                     follow_ready = self._pool_ready(day_cfg)
-                    follow_full = (not follow_need) or (follow_ready >= follow_high)
                     reach_need = self._reach_harvest_on(day_cfg)
+                    reach_low = self._reach_likes_left(day_cfg) if reach_need else 0
                     reach_high = max(1, int(eng.get("story_reach_daily_cap", 100) or 100) * mult)
                     reach_ready = self._reach_pool_ready()
-                    reach_full = (not reach_need) or (reach_ready >= reach_high)
+                    # STAGE 2 gate - may this pool build past low-water? Only once the bot
+                    # is DONE for the day (the consumer has used up today's room): then the
+                    # scraper has nothing to wait for, so it builds the high-water buffer for
+                    # tomorrow. While the bot still has room we stop at low-water and let it
+                    # work the Pi instead of over-filling.
+                    follow_build_high = follow_need and self._day_room("follows", day_cfg) <= 0
+                    reach_build_high = reach_need and self._day_room("likes", day_cfg) <= 0
+                    # Balance the two pools: don't push either past low-water while the
+                    # other is still below it (so a big follow backlog can't vet to 5x cap
+                    # before reach gets a turn). target = high only when this pool may build
+                    # AND the other is already at low-water; otherwise cap at low-water.
+                    reach_below_low = reach_need and reach_ready < reach_low
+                    follow_below_low = follow_need and follow_ready < follow_low
+                    follow_target = follow_high if (follow_build_high and not reach_below_low) else follow_low
+                    reach_target = reach_high if (reach_build_high and not follow_below_low) else reach_low
+                    follow_full = (not follow_need) or (follow_ready >= follow_target)
+                    reach_full = (not reach_need) or (reach_ready >= reach_target)
                     if coordinate and self._bot_is_acting():
                         disconnect()   # bot is working → free the Pi, close our Chrome
                         self._write_scraper_status(
@@ -2627,8 +2648,8 @@ class Bot:
                     if follow_full and reach_full:
                         disconnect()
                         self._write_scraper_status(
-                            phase=f"pools full - follow {follow_ready}/{follow_high}, "
-                                  f"reach {reach_ready}/{reach_high}; idle")
+                            phase=f"pools at target - follow {follow_ready}/{follow_target}, "
+                                  f"reach {reach_ready}/{reach_target}; idle")
                         self._interruptible_sleep(idle)
                         continue
 
@@ -2637,9 +2658,10 @@ class Bot:
                     if page is None:
                         self._interruptible_sleep(30)   # not logged in - retry later
                         continue
-                    # 1. FOLLOW pool: scrape raw usernames → vet → eligible list, but
-                    #    only when the bot will consume it and it isn't already full.
-                    if follow_need and not follow_full:
+                    # 1. FOLLOW pool: scrape raw usernames → vet → eligible list, only
+                    #    up to this pass's target (low-water until reach also has a day's
+                    #    worth, then high-water) so reach isn't starved.
+                    if follow_need and follow_ready < follow_target:
                         self._write_scraper_status(phase="scraping sources")
                         try:
                             exclude = {c["username"] for c in read_follow_candidates()}
@@ -2655,17 +2677,22 @@ class Bot:
                         if self._stop_event.is_set():
                             break
                         # 2. browser-vet the backlog into the eligible result list.
-                        self._filter_pool(page, day_cfg)
+                        self._filter_pool(page, day_cfg, target=follow_target)
                         if self._stop_event.is_set():
                             break
-                    # 3. REACH pool: harvest post links for the main account to like.
-                    if reach_need and not reach_full:
-                        try:
-                            self._harvest_reach_links(page, day_cfg)
-                        except Exception as e:
-                            self.state.emit("log", {"level": "error", "msg": f"reach harvest failed: {e}"})
-                        if self._stop_event.is_set():
-                            break
+                    # 3. REACH pool: harvest post links for the main account to like
+                    #    (re-check follow's low-water so reach tops up the instant follow
+                    #    reached a day's worth within this same pass).
+                    if reach_need:
+                        if reach_build_high and self._pool_ready(day_cfg) >= follow_low:
+                            reach_target = reach_high
+                        if reach_ready < reach_target:
+                            try:
+                                self._harvest_reach_links(page, day_cfg, target=reach_target)
+                            except Exception as e:
+                                self.state.emit("log", {"level": "error", "msg": f"reach harvest failed: {e}"})
+                            if self._stop_event.is_set():
+                                break
                     # 4. idle until the next pass → close the browser, free the Pi.
                     disconnect()
                     self._write_scraper_status(phase="idle")
@@ -3523,11 +3550,12 @@ class Bot:
                        "the hashtag page"})
         return urls
 
-    def _harvest_reach_links(self, page, cfg) -> None:
+    def _harvest_reach_links(self, page, cfg, target: int = None) -> None:
         """Burner-side: top up the persistent reach pool (post links) the main account
         likes from. Browser navigation only - round-robins the niche hashtags (tag grid
         + keyword-search fallback via _hashtag_post_urls) so the pool is tag-diverse,
-        fills to the high-water mark, and prunes already-visited posts. The scraper is
+        fills to `target` (default the reach high-water mark), and prunes already-visited
+        posts. The scraper is
         the SOLE writer of reach_pool.json (the bot dedups via reach_liked.log), so these
         atomic writes never race the consumer. Backs off naturally: a full tag cycle that
         adds nothing ends the pass, and the outer loop idles before retrying."""
@@ -3537,7 +3565,8 @@ class Bot:
         tags = self._reach_tags(cfg)
         scr = cfg.get("scraper", {}) or {}
         mult = int(scr.get("pool_high_mult", 5))
-        high = max(1, int(eng.get("story_reach_daily_cap", 100) or 100) * mult)
+        if target is None:
+            target = max(1, int(eng.get("story_reach_daily_cap", 100) or 100) * mult)
         per_tag = int(eng.get("reach_scrape_per_tag", 60) or 60)
         lo, hi = float(scr.get("min_delay", 1)), float(scr.get("max_delay", 3))
 
@@ -3545,13 +3574,13 @@ class Bot:
         pool = [e for e in read_reach_pool() if e["url"] not in liked]   # prune visited
         have = {e["url"] for e in pool}
         random.shuffle(tags)   # vary which tag leads each pass
-        self._write_scraper_status(phase=f"harvesting reach links ({len(pool)}/{high})")
+        self._write_scraper_status(phase=f"harvesting reach links ({len(pool)}/{target})")
 
         progress = True
-        while progress and len(pool) < high and not self._stop_event.is_set():
+        while progress and len(pool) < target and not self._stop_event.is_set():
             progress = False
             for tag in tags:
-                if self._stop_event.is_set() or len(pool) >= high:
+                if self._stop_event.is_set() or len(pool) >= target:
                     break
                 if self._bot_is_acting():   # bot woke up → yield the Pi immediately
                     write_reach_pool(pool)
@@ -3576,7 +3605,7 @@ class Bot:
                     self.state.update(
                         reach_scraped=self.state.snapshot().get("reach_scraped", 0) + added,
                         reach_pool=len(pool))
-                    self._write_scraper_status(phase=f"harvesting reach links ({len(pool)}/{high})")
+                    self._write_scraper_status(phase=f"harvesting reach links ({len(pool)}/{target})")
                 self._jitter(lo, hi)
         write_reach_pool(pool)
 
