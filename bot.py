@@ -1124,16 +1124,19 @@ class Bot:
 
     # --- source scraping (growth: fill the candidate pool with strangers) ---
 
-    def _collect_modal(self, dialog, exclude: str, cap: int, on_progress=None) -> list[str]:
+    def _collect_modal(self, dialog, exclude: str, cap: int, on_collect=None) -> list[str]:
         """Scroll a username-list dialog and accumulate usernames up to `cap`.
         Shared by followers/following and likers scraping. Mirrors the
         accumulate-on-every-scroll approach of _scrape_following so rows that
-        virtualize out of the DOM aren't lost. `on_progress(count)` (optional) fires
-        as the count grows so a long scroll keeps a live heartbeat (the scraper wires
-        it to its status file - otherwise the dashboard can't tell scrolling from stuck)."""
+        virtualize out of the DOM aren't lost. `on_collect(order)` (optional) is
+        called with the cumulative list as it grows: it ingests the new names live
+        (so the backlog count + stop-checks update mid-scroll, not only when the seed
+        finishes) and returns a truthy signal when scrolling should stop."""
         seen: set[str] = set()
         order: list[str] = []
         self._collect_into(dialog, exclude, seen, order)
+        if on_collect and on_collect(order):
+            return order[:cap]
         prev = -1
         stagnant = 0
         while stagnant < 6 and len(order) < cap:
@@ -1148,8 +1151,8 @@ class Bot:
                 stagnant = 0
                 prev = len(seen)
                 self.state.update(phase_detail=f"collected {len(seen)} so far...")
-                if on_progress:
-                    on_progress(len(order))
+                if on_collect and on_collect(order):
+                    break
         return order[:cap]
 
     def _open_list_modal(self, page, profile: str, which: str):
@@ -1186,17 +1189,17 @@ class Bot:
         return page.locator('div[role="dialog"]').last
 
     def _scrape_list(self, page, profile: str, which: str, cap: int = 600,
-                     on_progress=None) -> list[str]:
+                     on_collect=None) -> list[str]:
         """Return up to `cap` usernames from a profile's followers/following."""
         self.state.update(status="scraping", phase_detail=f"opening @{profile}'s {which}")
         dialog = self._open_list_modal(page, profile, which)
         self._jitter(1.5, 3.0)
         # Exclude the profile owner's own self-links; our own account and
         # already-followed accounts are dropped later by the done-set.
-        return self._collect_modal(dialog, profile, cap, on_progress=on_progress)
+        return self._collect_modal(dialog, profile, cap, on_collect=on_collect)
 
     def _scrape_likers(self, page, post_url: str, cap: int = 600,
-                       on_progress=None) -> list[str]:
+                       on_collect=None) -> list[str]:
         """Return up to `cap` usernames who liked a post. Returns [] when IG
         hides the likers (common on video/reels and very large accounts)."""
         self.state.update(status="scraping", phase_detail=f"opening likers of {post_url}")
@@ -1226,10 +1229,10 @@ class Bot:
         dialog = page.locator('div[role="dialog"]').last
         self._jitter(1.0, 2.0)
         my = (os.getenv("IG_USERNAME") or "").lower()
-        return self._collect_modal(dialog, my, cap, on_progress=on_progress)
+        return self._collect_modal(dialog, my, cap, on_collect=on_collect)
 
     def _scrape_commenters(self, page, post_url: str, cap: int = 200,
-                           on_progress=None) -> list[str]:
+                           on_collect=None) -> list[str]:
         """Return up to `cap` usernames who COMMENTED on a post (higher intent than
         passive likers). Best-effort: IG's comment markup shifts often, so the
         load-more selectors are tried loosely and a miss just yields fewer names."""
@@ -1278,12 +1281,12 @@ class Bot:
             else:
                 stagnant = 0
                 self.state.update(phase_detail=f"collected {len(seen)} commenters...")
-                if on_progress:
-                    on_progress(len(order))
+                if on_collect and on_collect(order):
+                    break
         return order[:cap]
 
     def _scrape_hashtag(self, page, tag: str, cap: int = 200,
-                        per_post: int = 60, on_progress=None) -> list[str]:
+                        per_post: int = 60, on_collect=None) -> list[str]:
         """Return up to `cap` usernames sourced from a hashtag - the authors and
         commenters of recent posts under #tag. People posting/commenting on a
         niche hashtag are high-intent targets."""
@@ -1333,7 +1336,7 @@ class Bot:
             if self._stop_event.is_set() or len(out) >= cap:
                 break
             try:
-                people = self._scrape_commenters(page, url, per_post, on_progress=on_progress)
+                people = self._scrape_commenters(page, url, per_post)
             except Exception:
                 people = []
             for u in people:
@@ -1341,8 +1344,10 @@ class Bot:
                     continue
                 seen_users.add(u)
                 out.append(u)
-            if on_progress:
-                on_progress(len(out))
+            # Ingest + stop-check at post granularity (each post's commenters are
+            # collected fully first - they're small - then handed up in one batch).
+            if on_collect and on_collect(out):
+                break
         return out[:cap]
 
     def _scrape_candidates(self, page, cfg, pool_read=None, pool_write=None,
@@ -1378,9 +1383,11 @@ class Bot:
         def pending_count() -> int:
             return sum(1 for c in pool if c["username"] not in done)
 
-        def ingest(users, source):
-            """Append up to len(users) new usernames under `source`, dedup'd, and
-            flush atomically. Returns the count actually added."""
+        def ingest(users, source) -> int:
+            """Dedup + append new usernames under `source` and flush atomically, so
+            the backlog file - and thus the scraper's status heartbeat AND the
+            candidate_pool_min stop-check - reflects them IMMEDIATELY (mid-scroll),
+            not only when a seed finishes. Returns the count newly added."""
             nonlocal added
             before = added
             for u in users:
@@ -1389,19 +1396,13 @@ class Bot:
                 existing.add(u)
                 pool.append({"username": u, "source": source})
                 added += 1
-            # Flush after each chunk so the pool/backlog grows live (and the
-            # scraper's status heartbeat updates) instead of only at the very end.
             if added != before:
                 pool_write(pool)
+                self.state.update(candidate_pool=pending_count())
             if on_progress:
                 on_progress()
             return added - before
 
-        # Build a flat task list spanning ALL source types/seeds. Each task lazily
-        # scrapes its seed ONCE (the _scrape_* helpers are one-shot, not resumable),
-        # caches the remaining usernames, and yields them in `seed_chunk`-sized
-        # rounds. Round-robining the INGEST (not the scraping) interleaves seeds in
-        # the pool without re-navigating/re-scrolling the same modal each round.
         def _norm_profile(v):
             return (v or "").strip().lstrip("@").lower()
 
@@ -1411,90 +1412,90 @@ class Bot:
         def _norm_tag(v):
             return (v or "").strip().lstrip("#").lower()
 
-        # Live heartbeat during a seed's (possibly minute-long) scroll: report the
-        # running count to status_cb, throttled so we don't rewrite the status file
-        # every scroll. Without this the dashboard's scraper phase/ts freezes mid-seed
-        # and a long scroll is indistinguishable from a hang.
+        # The hook each scrape helper calls as it scrolls: ingest the new names LIVE
+        # (so the backlog count climbs in real time), refresh the throttled status,
+        # and tell the helper when to stop scrolling - "stop" once the pool hits
+        # candidate_pool_min (so we don't scroll a seed to its 600 cap when only a few
+        # more were needed), "next" once this seed has handed over a full seed_chunk
+        # so we rotate to the next source and keep the backlog diverse.
         _last_status = [0.0]
-        def _seed_progress(desc):
-            if not status_cb:
-                return None
-            def cb(n):
+        def _collector(label, desc):
+            state = {"new": 0}
+            def hook(order):
+                state["new"] += ingest(order, label)
                 now = time.monotonic()
-                if now - _last_status[0] >= 2.0:
+                if status_cb and now - _last_status[0] >= 1.5:
                     _last_status[0] = now
-                    status_cb(f"scraping {desc}: {n} collected")
-            return cb
+                    status_cb(f"scraping {desc}: backlog {pending_count()}")
+                if self._stop_event.is_set() or pending_count() >= pool_min:
+                    return "stop"
+                if seed_chunk > 0 and state["new"] >= seed_chunk:
+                    return "next"
+                return None
+            return hook, state
 
-        tasks = []   # each: {"label","desc","scrape","done","buf"}
+        tasks = []   # each: {"label","desc","scrape","exhausted"}
         for prof in sources.get("follower_profiles", []) or []:
             prof = _norm_profile(prof)
             if prof:
                 tasks.append({"label": f"followers:{prof}", "desc": f"@{prof} followers",
-                              "scrape": (lambda p=prof, d=f"@{prof} followers":
-                                         self._scrape_list(page, p, "followers", per_cap,
-                                                           on_progress=_seed_progress(d))),
-                              "done": False, "buf": []})
+                              "scrape": (lambda hook, p=prof:
+                                         self._scrape_list(page, p, "followers", per_cap, on_collect=hook)),
+                              "exhausted": False})
         for post in sources.get("liker_posts", []) or []:
             post = _norm_post(post)
             if post:
                 tasks.append({"label": f"likers:{post}", "desc": f"likers of {post}",
-                              "scrape": (lambda u=post, d=f"likers of {post}":
-                                         self._scrape_likers(page, u, per_cap,
-                                                             on_progress=_seed_progress(d))),
-                              "done": False, "buf": []})
+                              "scrape": (lambda hook, u=post:
+                                         self._scrape_likers(page, u, per_cap, on_collect=hook)),
+                              "exhausted": False})
         for post in sources.get("commenter_posts", []) or []:
             post = _norm_post(post)
             if post:
                 tasks.append({"label": f"commenters:{post}", "desc": f"commenters of {post}",
-                              "scrape": (lambda u=post, d=f"commenters of {post}":
-                                         self._scrape_commenters(page, u, per_cap,
-                                                                 on_progress=_seed_progress(d))),
-                              "done": False, "buf": []})
+                              "scrape": (lambda hook, u=post:
+                                         self._scrape_commenters(page, u, per_cap, on_collect=hook)),
+                              "exhausted": False})
         for tag in sources.get("hashtags", []) or []:
             tag = _norm_tag(tag)
             if tag:
                 tasks.append({"label": f"hashtag:{tag}", "desc": f"#{tag}",
-                              "scrape": (lambda t=tag, d=f"#{tag}":
-                                         self._scrape_hashtag(page, t, per_cap,
-                                                              on_progress=_seed_progress(d))),
-                              "done": False, "buf": []})
+                              "scrape": (lambda hook, t=tag:
+                                         self._scrape_hashtag(page, t, per_cap, on_collect=hook)),
+                              "exhausted": False})
 
-        scraped_labels: set[str] = set()   # seeds we've actually navigated this pass
-
-        def _take_chunk(task):
-            """Pull this seed's next chunk into the pool. Scrapes lazily on first
-            visit. Marks the task done when its buffer is drained."""
-            if not task["buf"]:
-                if task["label"] in scraped_labels:
-                    task["done"] = True   # already scraped, nothing left
-                    return
-                scraped_labels.add(task["label"])
-                try:
-                    users = task["scrape"]()
-                    task["buf"] = list(users)
-                    self.state.emit("log", {"level": "info",
-                                            "msg": f"scraped {len(users)} from {task['desc']}"})
-                except Exception as e:
-                    task["done"] = True
-                    self.state.emit("log", {"level": "error",
-                                            "msg": f"scrape {task['desc']} failed: {e}"})
-                    return
-            n = len(task["buf"]) if seed_chunk <= 0 else seed_chunk
-            chunk, task["buf"] = task["buf"][:n], task["buf"][n:]
-            ingest(chunk, task["label"])
-            if not task["buf"]:
-                task["done"] = True
-
-        # Round-robin across seeds until all are drained, the pool is full, or stop.
+        # Round-robin across seeds: each visit pulls up to seed_chunk new names then
+        # rotates (so the backlog interleaves sources), stopping the instant the pool
+        # hits candidate_pool_min. A seed that handed over a full chunk MAY have more,
+        # so it's revisited next round (the helper re-scrolls, dedup skips what we
+        # already took); one that gave less is drained and marked exhausted. The
+        # _scrape_* helpers re-navigate on each visit, so this re-scrolls - acceptable
+        # since vetting the existing backlog first (see run_scraper) makes a fresh
+        # scrape the exception, and it stops the moment the pool is full.
         while not self._stop_event.is_set() and pending_count() < pool_min:
-            active = [t for t in tasks if not t["done"]]
-            if not active:
-                break
-            for task in active:
+            progressed = False
+            for task in tasks:
                 if self._stop_event.is_set() or pending_count() >= pool_min:
                     break
-                _take_chunk(task)
+                if task["exhausted"]:
+                    continue
+                hook, state = _collector(task["label"], task["desc"])
+                try:
+                    task["scrape"](hook)
+                except Exception as e:
+                    task["exhausted"] = True
+                    self.state.emit("log", {"level": "error",
+                                            "msg": f"scrape {task['desc']} failed: {e}"})
+                    continue
+                if state["new"]:
+                    progressed = True
+                    self.state.emit("log", {"level": "info",
+                                            "msg": f"+{state['new']} from {task['desc']} "
+                                                   f"(backlog {pending_count()})"})
+                if seed_chunk <= 0 or state["new"] < seed_chunk:
+                    task["exhausted"] = True   # drained this source
+            if not progressed:
+                break
 
         if added:
             pool_write(pool)
@@ -2692,29 +2693,37 @@ class Bot:
                     if page is None:
                         self._interruptible_sleep(30)   # not logged in - retry later
                         continue
-                    # 1. FOLLOW pool: scrape raw usernames → vet → eligible list, only
-                    #    up to this pass's target (low-water until reach also has a day's
-                    #    worth, then high-water) so reach isn't starved.
+                    # 1. FOLLOW pool, up to this pass's target (low-water until reach
+                    #    also has a day's worth, then high-water) so reach isn't starved.
+                    #    VET-FIRST: drain the already-scraped backlog into the eligible
+                    #    list before scraping anything new - a fresh scrape is wasteful
+                    #    when the queued backlog can already close the gap, and most
+                    #    re-scraped names are dupes of accounts we've already vetted.
                     if follow_need and follow_ready < follow_target:
-                        self._write_scraper_status(phase="scraping sources")
-                        try:
-                            exclude = {c["username"] for c in read_follow_candidates()}
-                            exclude |= {r["username"] for r in read_filter_rejected_log()}
-                            self._scrape_candidates(
-                                page, day_cfg,
-                                pool_read=read_scraper_todo,
-                                pool_write=write_scraper_todo,
-                                extra_exclude=exclude,
-                                on_progress=lambda: self._write_scraper_status(phase="scraping sources"),
-                                status_cb=lambda ph: self._write_scraper_status(phase=ph))
-                        except Exception as e:
-                            self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
-                        if self._stop_event.is_set():
-                            break
-                        # 2. browser-vet the backlog into the eligible result list.
                         self._filter_pool(page, day_cfg, target=follow_target)
                         if self._stop_event.is_set():
                             break
+                        # 2. Still short and the backlog couldn't cover it? Scrape new
+                        #    sources (stops the moment the backlog hits candidate_pool_min
+                        #    thanks to live ingest), then vet what we just queued.
+                        if self._pool_ready(day_cfg) < follow_target:
+                            self._write_scraper_status(phase="scraping sources")
+                            try:
+                                exclude = {c["username"] for c in read_follow_candidates()}
+                                exclude |= {r["username"] for r in read_filter_rejected_log()}
+                                self._scrape_candidates(
+                                    page, day_cfg,
+                                    pool_read=read_scraper_todo,
+                                    pool_write=write_scraper_todo,
+                                    extra_exclude=exclude,
+                                    status_cb=lambda ph: self._write_scraper_status(phase=ph))
+                            except Exception as e:
+                                self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
+                            if self._stop_event.is_set():
+                                break
+                            self._filter_pool(page, day_cfg, target=follow_target)
+                            if self._stop_event.is_set():
+                                break
                     # 3. REACH pool: harvest post links for the main account to like
                     #    (re-check follow's low-water so reach tops up the instant follow
                     #    reached a day's worth within this same pass).
