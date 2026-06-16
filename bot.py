@@ -2055,7 +2055,7 @@ class Bot:
             page.wait_for_selector("header", timeout=12000)
         except Exception:
             return "unavailable"
-        self._jitter(1.0, 2.5)
+        self._jitter(0.4, 1.2)   # brief settle (read-only burner — light pacing is fine)
         if filters.get("skip_private", True) and self._is_private(page):
             return "private"
         counts = self._read_profile_counts(page)
@@ -2067,8 +2067,8 @@ class Bot:
         follow_cfg = cfg.get("follow", {}) or {}
         filters = follow_cfg.get("filters", {}) or {}
         scr = cfg.get("scraper", {}) or {}
-        min_d = float(scr.get("min_delay", 3))
-        max_d = float(scr.get("max_delay", 8))
+        min_d = float(scr.get("min_delay", 1.5))
+        max_d = float(scr.get("max_delay", 4))
         long_every = int(scr.get("long_break_every", 40))
         long_min = float(scr.get("long_break_min", 60))
         long_max = float(scr.get("long_break_max", 180))
@@ -3341,6 +3341,14 @@ class Bot:
                 self.state.emit("log", {"level": "error", "msg": f"scrape failed: {e}"})
             candidates = read_follow_candidates()
             targets = [c for c in candidates if c["username"] not in done_set]
+
+        # When an external scraper owns the pool, only follow accounts it has
+        # already evaluated and KEPT (filter_checked.log) — never the raw,
+        # not-yet-filtered candidates it's still grinding through. This is what
+        # makes "follow only scraped + filtered users" actually hold.
+        if external_scraper:
+            checked = {r["username"] for r in read_filter_checked_log()}
+            targets = [c for c in targets if c["username"] in checked]
 
         self.state.update(
             status="running",
