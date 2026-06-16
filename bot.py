@@ -597,6 +597,7 @@ class Bot:
                                 # poison profile can't jam the queue every batch
         self._warmed = False    # one-time external-scraper pool warm-up gate
         self._actions_since_resync = 0  # drives periodic account-count re-sync
+        self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
         self._story_tick = 0            # interleaved story-reach: actions since last view
         self._story_today = 0           # stories viewed this batch (vs daily cap)
         self._story_queue = None        # lazily-built pool of accounts to story-view
@@ -1317,6 +1318,12 @@ class Bot:
         sources = follow_cfg.get("sources", {}) or {}
         per_cap = int(follow_cfg.get("scrape_per_source_cap", 600))
         pool_min = int(follow_cfg.get("candidate_pool_min", 300))
+        # Per-SEED round-robin chunk: how many of a seed's raw usernames we drain
+        # into the pool before rotating to the next seed. Keeps the todo/pool
+        # interleaved across seeds instead of one big same-seed block (the filter
+        # appends in todo order, so the eligible pool inherits this mixing). 0/neg
+        # = no chunking (drain each seed fully, legacy-ish ordering).
+        seed_chunk = int(follow_cfg.get("scrape_per_seed_cap", 150))
 
         my = (os.getenv("IG_USERNAME") or "").lower()
         done = self._follow_done_set(load_whitelist(), my)
@@ -1329,6 +1336,8 @@ class Bot:
             return sum(1 for c in pool if c["username"] not in done)
 
         def ingest(users, source):
+            """Append up to len(users) new usernames under `source`, dedup'd, and
+            flush atomically. Returns the count actually added."""
             nonlocal added
             before = added
             for u in users:
@@ -1337,72 +1346,89 @@ class Bot:
                 existing.add(u)
                 pool.append({"username": u, "source": source})
                 added += 1
-            # Flush after each source so the pool/backlog grows live (and the
+            # Flush after each chunk so the pool/backlog grows live (and the
             # scraper's status heartbeat updates) instead of only at the very end.
             if added != before:
                 pool_write(pool)
             if on_progress:
                 on_progress()
+            return added - before
 
+        # Build a flat task list spanning ALL source types/seeds. Each task lazily
+        # scrapes its seed ONCE (the _scrape_* helpers are one-shot, not resumable),
+        # caches the remaining usernames, and yields them in `seed_chunk`-sized
+        # rounds. Round-robining the INGEST (not the scraping) interleaves seeds in
+        # the pool without re-navigating/re-scrolling the same modal each round.
+        def _norm_profile(v):
+            return (v or "").strip().lstrip("@").lower()
+
+        def _norm_post(v):
+            return (v or "").strip()
+
+        def _norm_tag(v):
+            return (v or "").strip().lstrip("#").lower()
+
+        tasks = []   # each: {"label","desc","scrape","done","buf"}
         for prof in sources.get("follower_profiles", []) or []:
-            if self._stop_event.is_set() or pending_count() >= pool_min:
-                break
-            prof = (prof or "").strip().lstrip("@").lower()
-            if not prof:
-                continue
-            try:
-                users = self._scrape_list(page, prof, "followers", per_cap)
-                ingest(users, f"followers:{prof}")
-                self.state.emit("log", {"level": "info",
-                                        "msg": f"scraped {len(users)} from @{prof} followers"})
-            except Exception as e:
-                self.state.emit("log", {"level": "error",
-                                        "msg": f"scrape @{prof} followers failed: {e}"})
-
+            prof = _norm_profile(prof)
+            if prof:
+                tasks.append({"label": f"followers:{prof}", "desc": f"@{prof} followers",
+                              "scrape": (lambda p=prof: self._scrape_list(page, p, "followers", per_cap)),
+                              "done": False, "buf": []})
         for post in sources.get("liker_posts", []) or []:
-            if self._stop_event.is_set() or pending_count() >= pool_min:
-                break
-            post = (post or "").strip()
-            if not post:
-                continue
-            try:
-                users = self._scrape_likers(page, post, per_cap)
-                ingest(users, "likers")
-                self.state.emit("log", {"level": "info",
-                                        "msg": f"scraped {len(users)} likers from {post}"})
-            except Exception as e:
-                self.state.emit("log", {"level": "error",
-                                        "msg": f"scrape likers {post} failed: {e}"})
-
+            post = _norm_post(post)
+            if post:
+                tasks.append({"label": f"likers:{post}", "desc": f"likers of {post}",
+                              "scrape": (lambda u=post: self._scrape_likers(page, u, per_cap)),
+                              "done": False, "buf": []})
         for post in sources.get("commenter_posts", []) or []:
-            if self._stop_event.is_set() or pending_count() >= pool_min:
-                break
-            post = (post or "").strip()
-            if not post:
-                continue
-            try:
-                users = self._scrape_commenters(page, post, per_cap)
-                ingest(users, "commenters")
-                self.state.emit("log", {"level": "info",
-                                        "msg": f"scraped {len(users)} commenters from {post}"})
-            except Exception as e:
-                self.state.emit("log", {"level": "error",
-                                        "msg": f"scrape commenters {post} failed: {e}"})
-
+            post = _norm_post(post)
+            if post:
+                tasks.append({"label": f"commenters:{post}", "desc": f"commenters of {post}",
+                              "scrape": (lambda u=post: self._scrape_commenters(page, u, per_cap)),
+                              "done": False, "buf": []})
         for tag in sources.get("hashtags", []) or []:
-            if self._stop_event.is_set() or pending_count() >= pool_min:
+            tag = _norm_tag(tag)
+            if tag:
+                tasks.append({"label": f"hashtag:{tag}", "desc": f"#{tag}",
+                              "scrape": (lambda t=tag: self._scrape_hashtag(page, t, per_cap)),
+                              "done": False, "buf": []})
+
+        scraped_labels: set[str] = set()   # seeds we've actually navigated this pass
+
+        def _take_chunk(task):
+            """Pull this seed's next chunk into the pool. Scrapes lazily on first
+            visit. Marks the task done when its buffer is drained."""
+            if not task["buf"]:
+                if task["label"] in scraped_labels:
+                    task["done"] = True   # already scraped, nothing left
+                    return
+                scraped_labels.add(task["label"])
+                try:
+                    users = task["scrape"]()
+                    task["buf"] = list(users)
+                    self.state.emit("log", {"level": "info",
+                                            "msg": f"scraped {len(users)} from {task['desc']}"})
+                except Exception as e:
+                    task["done"] = True
+                    self.state.emit("log", {"level": "error",
+                                            "msg": f"scrape {task['desc']} failed: {e}"})
+                    return
+            n = len(task["buf"]) if seed_chunk <= 0 else seed_chunk
+            chunk, task["buf"] = task["buf"][:n], task["buf"][n:]
+            ingest(chunk, task["label"])
+            if not task["buf"]:
+                task["done"] = True
+
+        # Round-robin across seeds until all are drained, the pool is full, or stop.
+        while not self._stop_event.is_set() and pending_count() < pool_min:
+            active = [t for t in tasks if not t["done"]]
+            if not active:
                 break
-            tag = (tag or "").strip().lstrip("#").lower()
-            if not tag:
-                continue
-            try:
-                users = self._scrape_hashtag(page, tag, per_cap)
-                ingest(users, f"hashtag:{tag}")
-                self.state.emit("log", {"level": "info",
-                                        "msg": f"scraped {len(users)} from #{tag}"})
-            except Exception as e:
-                self.state.emit("log", {"level": "error",
-                                        "msg": f"scrape #{tag} failed: {e}"})
+            for task in active:
+                if self._stop_event.is_set() or pending_count() >= pool_min:
+                    break
+                _take_chunk(task)
 
         if added:
             pool_write(pool)
@@ -3824,6 +3850,41 @@ class Bot:
             return 2
         return 3
 
+    @staticmethod
+    def _pick_diverse_candidate(eligible: list[dict], recent_seeds, max_streak: int) -> dict:
+        """Choose the next account to follow so consecutive follows SPREAD across
+        distinct seeds instead of draining one seed/source before the next.
+
+        `eligible` is the current pending list; `recent_seeds` is a sequence of the
+        last few seeds we picked (most recent last). We group candidates by their
+        full `source` label (the seed, e.g. 'followers:alice' / 'hashtag:norwood'),
+        pick the highest-priority seed-group (by _source_rank, the existing intent
+        weighting) whose seed is NOT over-represented in the recent window, and
+        return its first member. _source_rank stays a TIE-BREAK so high-intent
+        sources still lead — diversity just prevents long same-seed runs.
+
+        max_streak: avoid picking a seed that already appears this many times (or
+        more) in `recent_seeds` while another seed is available. <=0 disables
+        diversity (falls back to pure priority order)."""
+        if not eligible:
+            return None
+        # Order candidates by intent priority, stable on pool order (so within a
+        # seed we still follow the earliest-queued first).
+        ordered = sorted(eligible, key=lambda c: Bot._source_rank(c.get("source", "")))
+        if max_streak <= 0:
+            return ordered[0]
+        recent = list(recent_seeds)
+        # First choice: the top-priority candidate whose seed isn't saturated in
+        # the recent window. This walks priority order, so a higher-intent seed is
+        # preferred over a lower-intent one as long as it's not over-streaked.
+        for c in ordered:
+            seed = c.get("source", "")
+            if recent[-max_streak:].count(seed) < max_streak:
+                return c
+        # Every available seed is saturated (e.g. only one seed left, or the window
+        # is full of each) — fall back to the highest-priority candidate.
+        return ordered[0]
+
     def _process_follow_day(self, page, cfg, max_actions=None) -> str:
         """Run one daily batch of follows pulled from the candidate pool.
 
@@ -3854,6 +3915,11 @@ class Bot:
                            or (sources.get("liker_posts") or []))
         external_scraper = bool(follow_cfg.get("external_scraper", False))
         pool_min = int(follow_cfg.get("candidate_pool_min", 300))
+        # Source diversity: don't follow the same seed (target's followers / one
+        # hashtag / one post) more than this many times in a row while another
+        # seed is available, so any window of follows is spread across sources.
+        # 0/1 = strongest spread; <=0 disables (pure intent-priority order).
+        max_same_seed = int(follow_cfg.get("max_same_seed_streak", 2))
 
         processed = 0
         attempts = 0             # accounts touched this call (for the batch limit)
@@ -3907,10 +3973,13 @@ class Bot:
                     )
                 return "exhausted"
 
-            # Follow the highest-intent sources first (commenters/hashtags before
-            # passive followers) - better exposure ROI per scarce daily action.
-            eligible.sort(key=lambda c: self._source_rank(c.get("source", "")))
-            cand = eligible[0]
+            # Pick for SOURCE DIVERSITY: spread consecutive follows across distinct
+            # seeds so we never drain one target's followers / one hashtag before
+            # the next. _source_rank still orders intent (commenters/hashtags >
+            # likers > followers) as the tie-break, so high-intent sources lead
+            # without being followed in one long same-seed run.
+            cand = self._pick_diverse_candidate(
+                eligible, self._recent_follow_seeds, max_same_seed)
             target = cand["username"]
             source = cand.get("source", "")
             seen.add(target)
@@ -3929,6 +3998,9 @@ class Bot:
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             if result == "ok":
                 append_log(followed_log, f"{ts}\t{target}\t{source}")
+                # Record the seed so the next pick steers away from it (diversity
+                # tracks real follows only — the scarce, IG-visible action).
+                self._recent_follow_seeds.append(source)
                 new_count = self.state.snapshot()["followed_count"] + 1
                 self.state.update(followed_count=new_count, last_message=f"followed @{target}")
                 self.state.emit("followed", {"timestamp": ts, "username": target, "source": source})
@@ -4369,6 +4441,7 @@ class Bot:
             password = os.getenv("IG_PASSWORD")
             self._me = (username or "").lstrip("@").lower()
             self._run_skip = set()   # fresh each run; poison accounts get another chance next run
+            self._recent_follow_seeds.clear()  # fresh source-diversity window each run
             self._warmed = False     # one-time pool warm-up gate (external scraper)
             if not username or not password:
                 self.state.update(status="error", error="IG_USERNAME / IG_PASSWORD not set")

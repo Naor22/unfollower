@@ -20,6 +20,8 @@ DEFAULT_FOLLOW = {
     "max_delay_seconds": 200,
     "candidate_pool_min": 300,
     "scrape_per_source_cap": 600,
+    "scrape_per_seed_cap": 150,    # source mix (scrape): per-seed round-robin chunk (0 = off)
+    "max_same_seed_streak": 2,     # source mix (consume): max same-seed follows in a row (0 = off)
     "external_scraper": False,   # true = the separate scraper service owns the pool
     "filters": {
         "skip_already_follows_me": True,
