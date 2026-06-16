@@ -105,6 +105,7 @@
     select { cursor: pointer; appearance: none;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b93a9' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
       background-repeat: no-repeat; background-position: right 11px center; padding-right: 32px; }
+    select:disabled, input:disabled, textarea:disabled { opacity: 0.45; cursor: not-allowed; }
     label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
     textarea { min-height: 200px; resize: vertical; font-family: var(--mono); font-size: 13px; line-height: 1.6; }
     .field-hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
@@ -424,67 +425,66 @@
           <span>Overview</span>
         </button>
 
-        <!-- UNFOLLOW sections -->
-        <template x-if="!isFollowMode()">
-          <div class="nav-group">
-            <div class="heading">Unfollow</div>
-            <button class="nav-item" :class="{ active: tab==='following' }" @click="go('following')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/></svg>
-              <span>Following</span><span class="count" x-text="totals.following || 0"></span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='unfollowed' }" @click="go('unfollowed')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="17" y1="8" x2="22" y2="13"/><line x1="22" y1="8" x2="17" y2="13"/></svg>
-              <span>Unfollowed</span><span class="count" x-text="totals.unfollowed || 0"></span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='skipped' }" @click="go('skipped')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-              <span>Skipped</span><span class="count" x-text="totals.skipped || 0"></span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='failed' }" @click="go('failed')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-              <span>Failed</span><span class="count" x-text="totals.failed || 0"></span>
-            </button>
-          </div>
-        </template>
+        <!-- Lists - always shown so the menu never changes between modes -->
+        <div class="nav-group">
+          <div class="heading">Unfollow</div>
+          <button class="nav-item" :class="{ active: tab==='following' }" @click="go('following')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/></svg>
+            <span>Following</span><span class="count" x-text="totals.following || 0"></span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='unfollowed' }" @click="go('unfollowed')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="17" y1="8" x2="22" y2="13"/><line x1="22" y1="8" x2="17" y2="13"/></svg>
+            <span>Unfollowed</span><span class="count" x-text="totals.unfollowed || 0"></span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='skipped' }" @click="go('skipped')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+            <span>Skipped</span><span class="count" x-text="totals.skipped || 0"></span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='failed' }" @click="go('failed')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <span>Failed</span><span class="count" x-text="totals.failed || 0"></span>
+          </button>
+        </div>
 
-        <!-- FOLLOW / CHURN sections -->
-        <template x-if="isFollowMode()">
-          <div class="nav-group">
-            <div class="heading">Growth</div>
-            <button class="nav-item" :class="{ active: tab==='sources' }" @click="go('sources')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-              <span>Sources</span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='candidates' }" @click="go('candidates')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-              <span>Candidates</span><span class="count" x-text="followTotals.pending || 0"></span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='followed' }" @click="go('followed')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-              <span>Followed</span><span class="count" x-text="followTotals.followed || 0"></span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='follow_skipped' }" @click="go('follow_skipped')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-              <span>Skipped</span><span class="count" x-text="followTotals.follow_skipped || 0"></span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='follow_failed' }" @click="go('follow_failed')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-              <span>Failed</span><span class="count" x-text="followTotals.follow_failed || 0"></span>
-            </button>
-            <button class="nav-item" x-show="config && config.mode === 'churn'" :class="{ active: tab==='churn' }" @click="go('churn')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-              <span>Marketing</span><span class="count" x-text="followTotals.churn_unfollowed || 0"></span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='discovered' }" @click="go('discovered')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              <span>Discovered</span><span class="count" x-text="discoveredSources.length || 0"></span>
-            </button>
-            <button class="nav-item" :class="{ active: tab==='analytics' }" @click="go('analytics')">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-              <span>Analytics</span>
-            </button>
-          </div>
-        </template>
+        <div class="nav-group">
+          <div class="heading">Growth</div>
+          <button class="nav-item" :class="{ active: tab==='sources' }" @click="go('sources')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span>Sources</span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='candidates' }" @click="go('candidates')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            <span>Candidates</span><span class="count" x-text="followTotals.pending || 0"></span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='followed' }" @click="go('followed')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+            <span>Followed</span><span class="count" x-text="followTotals.followed || 0"></span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='follow_skipped' }" @click="go('follow_skipped')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+            <span>Skipped</span><span class="count" x-text="followTotals.follow_skipped || 0"></span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='follow_failed' }" @click="go('follow_failed')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <span>Failed</span><span class="count" x-text="followTotals.follow_failed || 0"></span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='churn' }" @click="go('churn')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <span>Marketing</span><span class="count" x-text="followTotals.churn_unfollowed || 0"></span>
+          </button>
+          <button class="nav-item" :class="{ active: tab==='discovered' }" @click="go('discovered')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <span>Discovered</span><span class="count" x-text="discoveredSources.length || 0"></span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <div class="heading">Insights</div>
+          <button class="nav-item" :class="{ active: tab==='analytics' }" @click="go('analytics')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>Analytics</span>
+          </button>
+        </div>
 
         <div class="nav-group">
           <div class="heading">Settings</div>
@@ -580,13 +580,13 @@
               <div class="mode-select">
                 <label>Mode</label>
                 <div style="display:flex;align-items:center;gap:10px;">
-                  <select x-model="config.mode" @change="changeMode()" style="min-width:230px;">
-                    <option value="unfollow">Unfollow - clean up your following</option>
-                    <option value="follow">Follow - grow from candidate pool</option>
-                    <option value="churn">Marketing - follow then drop non-followers</option>
+                  <select x-model="config.mode" @change="changeMode()" :disabled="isRunning" style="min-width:230px;">
+                    <option value="unfollow">Unfollow</option>
+                    <option value="follow">Follow</option>
+                    <option value="churn">Marketing</option>
                   </select>
                   <span class="field-hint" style="margin:0;" x-show="!isRunning">applies next start</span>
-                  <span class="field-hint" style="margin:0;color:var(--warning);" x-show="isRunning">stop &amp; start to apply</span>
+                  <span class="field-hint" style="margin:0;color:var(--warning);" x-show="isRunning">stop the bot to change mode</span>
                 </div>
               </div>
             </template>
@@ -677,8 +677,9 @@
               <div class="value" x-text="followTotals.follow_skipped || 0"></div>
             </div>
             <div class="stat warn" x-show="config && config.mode === 'churn'">
-              <div class="label">Churn-unfollowed</div>
-              <div class="value warn" x-text="followTotals.churn_unfollowed || 0"></div>
+              <div class="label">Unfollowed · session</div>
+              <div class="value warn" x-text="(state.churn_unfollowed_count || 0) + (state.unfollowed_count || 0)"></div>
+              <div class="sub" x-text="(followTotals.churn_unfollowed || 0) + ' churned all-time'"></div>
             </div>
             <div class="stat">
               <div class="label">Daily cap</div>
@@ -1658,10 +1659,10 @@
         async init() {
           // Establish polling FIRST so a slow/failed initial load can't skip it.
           setInterval(() => { this._tick++; }, 1000); // re-render countdown
-          // Keep the follow totals (incl. "Pending to follow") live even when the bot
-          // is OFF - the scraper fills the pool in a separate process (no WS event),
-          // so poll the follow lists on a timer while in follow/churn mode.
-          setInterval(() => { if (this.isFollowMode()) this.refreshFollowLists(true); }, 10000);
+          // Keep totals (incl. "Pending to follow") live even when the bot is OFF - the
+          // scraper fills the pool in a separate process (no WS event). The sidebar now
+          // shows both unfollow + follow counts in every mode, so poll both lists.
+          setInterval(() => { this.refreshFollowLists(true); this.refreshLists(true); }, 10000);
 
           try { await this.loadActivityFromServer(); } catch (e) {}
           this.connectWS();
@@ -1960,12 +1961,12 @@
           catch (e) { this.showToast(e.message, 'error'); }
         },
 
-        async refreshLists() {
+        async refreshLists(silent) {
           try {
             const j = await this.fetch('/api/lists');
             this.following = j.following; this.unfollowed = j.unfollowed;
             this.failed = j.failed; this.skipped = j.skipped || []; this.totals = j.totals;
-          } catch (e) { this.showToast(e.message, 'error'); }
+          } catch (e) { if (!silent) this.showToast(e.message, 'error'); }
         },
 
         async refreshFollowLists(silent) {
@@ -2140,11 +2141,9 @@
         isFollowMode() { return this.config && (this.config.mode === 'follow' || this.config.mode === 'churn'); },
 
         async changeMode() {
+          // The sidebar shows every list in all modes now, so there's no tab to reset -
+          // just persist the new mode (it takes effect on the next Start).
           await this.saveConfig();
-          const unfollowTabs = ['following', 'unfollowed', 'skipped', 'failed'];
-          const followTabs = ['sources', 'candidates', 'followed', 'follow_skipped', 'follow_failed', 'churn', 'discovered', 'analytics'];
-          if (this.isFollowMode() && unfollowTabs.includes(this.tab)) this.tab = 'overview';
-          if (!this.isFollowMode() && followTabs.includes(this.tab)) this.tab = 'overview';
         },
 
         async loadConfig() {
