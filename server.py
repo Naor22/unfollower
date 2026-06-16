@@ -425,12 +425,9 @@ async def get_follow_lists():
     done |= {r["username"].lower() for r in skipped
              if r["reason"] in bot.PERMANENT_FOLLOW_SKIPS}
     done |= {r["username"].lower() for r in churn_unfollowed}
+    # follow_candidates is the eligible result list (scraper-vetted, or self-scraped
+    # when no external scraper), so "pending" is just it minus already-actioned.
     pending = [c for c in candidates if c["username"] not in done]
-    # With an external scraper, the bot follows ONLY vetted accounts — so "pending"
-    # must mirror that (checked & not yet actioned), not the whole raw pool.
-    if (bot.load_config().get("follow", {}) or {}).get("external_scraper", False):
-        checked = {r["username"].lower() for r in bot.read_filter_checked_log()}
-        pending = [c for c in pending if c["username"] in checked]
 
     return {
         "candidates": candidates,

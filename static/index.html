@@ -1142,12 +1142,12 @@
             </div>
             <template x-if="scraper && scraper.present">
               <div>
-                <div class="reach-stats">
-                  <div><div class="rs-n" x-text="scraper.pool || 0"></div><div class="rs-l">pool</div></div>
+                <div class="reach-stats" style="grid-template-columns:repeat(3,1fr);">
+                  <div><div class="rs-n" x-text="scraper.backlog || 0"></div><div class="rs-l">backlog</div></div>
                   <div><div class="rs-n" x-text="scraper.ready || 0"></div><div class="rs-l">ready</div></div>
-                  <div><div class="rs-n" x-text="scraper.checked || 0"></div><div class="rs-l">checked</div></div>
                   <div><div class="rs-n" x-text="scraper.rejected || 0"></div><div class="rs-l">rejected</div></div>
                 </div>
+                <p class="hint" style="margin-top:8px;font-size:11px;"><strong>backlog</strong> = scraped, waiting to be vetted · <strong>ready</strong> = vetted &amp; eligible (what the bot follows) · <strong>rejected</strong> = filtered out</p>
                 <p class="hint" style="margin-top:10px;">
                   <span x-show="scraper.phase" x-text="scraper.phase"></span><span x-show="scraper.age != null"> · updated <span x-text="scraper.age"></span>s ago</span>
                   <span x-show="scraper.error" style="color:var(--warning);"><br>⚠ <span x-text="scraper.error"></span></span>
@@ -1587,6 +1587,10 @@
           this.fetch('/api/account/refresh', { method: 'POST' }).catch(() => {});
           this.restoreDeployDir();   // re-link the deploy folder if granted before
           setInterval(() => { this._tick++; }, 1000); // re-render countdown
+          // Keep the follow totals (incl. "Pending to follow") live: the scraper
+          // adds eligible accounts in a separate process, which sends no WS event,
+          // so poll the follow lists periodically while in follow/churn mode.
+          setInterval(() => { if (this.isFollowMode()) this.refreshFollowLists(); }, 15000);
         },
 
         go(tab) {

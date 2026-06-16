@@ -29,7 +29,8 @@ WHITELIST_PATH = ROOT / "whitelist.txt"
 DATA_DIR = ROOT / "data"
 SESSION_PATH = DATA_DIR / "session.json"
 FOLLOWING_CACHE = DATA_DIR / "following.json"
-FOLLOW_CANDIDATES = DATA_DIR / "follow_candidates.json"
+FOLLOW_CANDIDATES = DATA_DIR / "follow_candidates.json"   # ELIGIBLE result list (bot consumes)
+SCRAPER_TODO = DATA_DIR / "scraper_todo.json"            # scraper's raw backlog to vet (input)
 DISCOVERED_SOURCES = DATA_DIR / "discovered_sources.json"
 ACCOUNT_STATS = DATA_DIR / "account_stats.json"
 SCRAPER_STATUS = DATA_DIR / "scraper_status.json"   # separate scraper service heartbeat/counts
@@ -425,14 +426,39 @@ def read_follow_candidates() -> list[dict]:
     return out
 
 
-def write_follow_candidates(entries: list[dict]) -> None:
-    """Atomically replace the candidate pool (temp file + os.replace) so a reader
-    in another process (the core bot) never sees a half-written file while the
-    scraper service republishes it."""
+def _write_candidates_atomic(path: Path, entries: list[dict]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = FOLLOW_CANDIDATES.with_suffix(".json.tmp")
+    tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(entries, indent=2), encoding="utf-8")
-    os.replace(tmp, FOLLOW_CANDIDATES)
+    os.replace(tmp, path)
+
+
+def write_follow_candidates(entries: list[dict]) -> None:
+    """Atomically replace the ELIGIBLE candidate list (the bot's input). Atomic so
+    the core bot never reads a half-written file while the scraper republishes."""
+    _write_candidates_atomic(FOLLOW_CANDIDATES, entries)
+
+
+def read_scraper_todo() -> list[dict]:
+    """The scraper's private backlog of raw scraped accounts awaiting vetting."""
+    if not SCRAPER_TODO.exists():
+        return []
+    try:
+        raw = json.loads(SCRAPER_TODO.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append({"username": item.lstrip("@").lower(), "source": ""})
+        elif isinstance(item, dict) and item.get("username"):
+            out.append({"username": str(item["username"]).lstrip("@").lower(),
+                        "source": item.get("source", "")})
+    return out
+
+
+def write_scraper_todo(entries: list[dict]) -> None:
+    _write_candidates_atomic(SCRAPER_TODO, entries)
 
 
 def read_filter_rejected_log() -> list[dict]:
@@ -1199,11 +1225,18 @@ class Bot:
                 out.append(u)
         return out[:cap]
 
-    def _scrape_candidates(self, page, cfg) -> int:
-        """Run every configured source, dedup against the follow done-set and the
-        existing pool, and append new usernames to follow_candidates.json. Stops
-        early once the pending pool reaches candidate_pool_min. Returns the count
-        added."""
+    def _scrape_candidates(self, page, cfg, pool_read=None, pool_write=None,
+                           extra_exclude=None) -> int:
+        """Run every configured source, dedup against the follow done-set + the
+        existing pool (+ extra_exclude), and append new usernames. Stops early once
+        the pending pool reaches candidate_pool_min. Returns the count added.
+
+        Defaults write the bot's follow_candidates pool (core-bot self-scrape). The
+        scraper service passes pool_read/pool_write for scraper_todo and
+        extra_exclude = already-vetted (result) + rejected usernames, so it never
+        re-queues accounts it has already evaluated."""
+        pool_read = pool_read or read_follow_candidates
+        pool_write = pool_write or write_follow_candidates
         follow_cfg = cfg.get("follow", {}) or {}
         sources = follow_cfg.get("sources", {}) or {}
         per_cap = int(follow_cfg.get("scrape_per_source_cap", 600))
@@ -1212,8 +1245,8 @@ class Bot:
         my = (os.getenv("IG_USERNAME") or "").lower()
         done = self._follow_done_set(load_whitelist(), my)
 
-        pool = read_follow_candidates()
-        existing = {c["username"] for c in pool}
+        pool = pool_read()
+        existing = {c["username"] for c in pool} | (extra_exclude or set())
         added = 0
 
         def pending_count() -> int:
@@ -1289,7 +1322,7 @@ class Bot:
                                         "msg": f"scrape #{tag} failed: {e}"})
 
         if added:
-            write_follow_candidates(pool)
+            pool_write(pool)
             self.state.update(candidate_pool=pending_count())
         return added
 
@@ -2044,21 +2077,17 @@ class Bot:
         server never reads a half-written file. The status FILE (not the WS state)
         is how this separate process reports to the dashboard."""
         try:
-            pool = read_follow_candidates()
+            todo = read_scraper_todo()
+            result = read_follow_candidates()    # eligible-only result list
             done = self._follow_done_set(load_whitelist(), self._me)
-            checked = {r["username"] for r in read_filter_checked_log()}
-            # "ready" = what the bot can actually follow now: vetted (passed the
-            # filter) AND not already followed/skipped/churned.
-            ready = sum(1 for c in pool
-                        if c["username"] in checked and c["username"] not in done)
+            ready = sum(1 for c in result if c["username"] not in done)
         except Exception:
-            pool, ready = [], 0
+            todo, ready = [], 0
         status = {
             "ts": time.time(),
             "phase": phase,
-            "pool": len(pool),
-            "ready": ready,
-            "checked": len(read_filter_checked_log()),
+            "backlog": len(todo),                # raw scraped, awaiting vetting
+            "ready": ready,                      # eligible & not yet followed (bot consumes)
             "rejected": len(read_filter_rejected_log()),
             "error": error,
         }
@@ -2089,8 +2118,10 @@ class Bot:
         return self._passes_filters(counts, filters)   # 'no_posts' / 'filtered' / None
 
     def _filter_pool(self, page, cfg) -> None:
-        """Evaluate not-yet-checked candidates, logging keep/reject, then republish
-        the pool (atomic) with rejected + already-consumed accounts removed."""
+        """Vet the scraper_todo backlog. Each account: pass → append to the ELIGIBLE
+        result list (follow_candidates, what the bot consumes); fail → rejected
+        ledger. Either way it leaves the todo. Persists both lists atomically as it
+        goes, so the bot reads a clean eligible-only list with no comparison."""
         follow_cfg = cfg.get("follow", {}) or {}
         filters = follow_cfg.get("filters", {}) or {}
         scr = cfg.get("scraper", {}) or {}
@@ -2099,54 +2130,57 @@ class Bot:
         long_every = int(scr.get("long_break_every", 40))
         long_min = float(scr.get("long_break_min", 60))
         long_max = float(scr.get("long_break_max", 180))
-
-        checked_log = _log_path("filter_checked_log", "data/filter_checked.log")
         rejected_log = _log_path("filter_rejected_log", "data/filter_rejected.log")
 
         done = self._follow_done_set(load_whitelist(), self._me)
-        checked = {r["username"] for r in read_filter_checked_log()}
-        rejected = {r["username"] for r in read_filter_rejected_log()}
-        pool = read_follow_candidates()
-        todo = [c["username"] for c in pool
-                if c["username"] not in done
-                and c["username"] not in checked
-                and c["username"] not in rejected]
+        todo = read_scraper_todo()
+        result = read_follow_candidates()
+        result_set = {c["username"] for c in result}
+        resolved: set[str] = set()   # vetted this pass (kept or rejected) → leave todo
 
-        self.state.emit("log", {"level": "info",
-                                "msg": f"filtering {len(todo)} candidate(s)"})
-        self._write_scraper_status(phase=f"filtering {len(todo)} candidate(s)")
+        def _persist():
+            # result = eligible & not already-followed; todo = the unresolved remainder.
+            write_follow_candidates([c for c in result if c["username"] not in done])
+            write_scraper_todo([c for c in todo
+                                if c["username"] not in resolved
+                                and c["username"] not in done
+                                and c["username"] not in result_set])
+
+        pending = [c for c in todo if c["username"] not in done
+                   and c["username"] not in result_set]
+        self.state.emit("log", {"level": "info", "msg": f"vetting {len(pending)} candidate(s)"})
+        self._write_scraper_status(phase=f"vetting {len(pending)}")
         processed = 0
-        for u in todo:
+        for c in todo:
             if self._stop_event.is_set():
                 break
+            u = c["username"]
+            if u in resolved or u in done or u in result_set:
+                continue
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             try:
                 reason = self._filter_one(page, u, filters)
             except Exception as e:
                 self.state.emit("log", {"level": "error", "msg": f"filter @{u} failed: {e}"})
-                continue   # leave unchecked, retry next pass
+                continue   # not resolved → stays in todo, retried next pass
             if reason is None:
-                append_log(checked_log, f"{ts}\t{u}")
-                checked.add(u)
+                result.append({"username": u, "source": c.get("source", "")})
+                result_set.add(u)
             else:
                 append_log(rejected_log, f"{ts}\t{u}\t{reason}")
-                rejected.add(u)
+            resolved.add(u)
             processed += 1
             self.state.emit("log", {"level": "info",
-                "msg": f"[{processed}/{len(todo)}] @{u} → "
+                "msg": f"[{processed}/{len(pending)}] @{u} → "
                        f"{'KEEP' if reason is None else 'reject (' + reason + ')'}"})
-            # Update the dashboard status every profile so it stays live (the JSON
-            # write is cheap; this also keeps the 'running' heartbeat fresh).
-            self._write_scraper_status(phase=f"filtered {processed}/{len(todo)}")
+            if processed % 5 == 0:
+                _persist()
+            self._write_scraper_status(phase=f"vetted {processed}/{len(pending)}")
             self._jitter(min_d, max_d)
             if long_every and processed % long_every == 0:
                 self._interruptible_sleep(random.uniform(long_min, long_max))
 
-        # Republish: drop rejected + already-consumed, keep good + still-unchecked.
-        new_pool = [c for c in pool
-                    if c["username"] not in rejected and c["username"] not in done]
-        if len(new_pool) != len(pool):
-            write_follow_candidates(new_pool)
+        _persist()
         self._write_scraper_status(phase="idle")
 
     def run_scraper(self) -> None:
@@ -2202,15 +2236,21 @@ class Bot:
                         self._write_scraper_status(phase="disabled (toggle off)")
                         self._interruptible_sleep(30)
                         continue
-                    # 1. scrape raw usernames (reuses every source scraper)
+                    # 1. scrape raw usernames into the TODO backlog (exclude anything
+                    #    already vetted into the result list or already rejected).
                     self._write_scraper_status(phase="scraping sources")
                     try:
-                        self._scrape_candidates(page, day_cfg)
+                        exclude = {c["username"] for c in read_follow_candidates()}
+                        exclude |= {r["username"] for r in read_filter_rejected_log()}
+                        self._scrape_candidates(page, day_cfg,
+                                                pool_read=read_scraper_todo,
+                                                pool_write=write_scraper_todo,
+                                                extra_exclude=exclude)
                     except Exception as e:
                         self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
                     if self._stop_event.is_set():
                         break
-                    # 2. browser-filter the pool
+                    # 2. browser-vet the backlog into the eligible result list
                     self._filter_pool(page, day_cfg)
                     if self._stop_event.is_set():
                         break
@@ -2466,12 +2506,16 @@ class Bot:
         return f"post_follow_verify_failed (shot:{shot})"
 
     def _follow(self, page, target: str, filters: Optional[dict] = None,
-                disc_cfg: Optional[dict] = None) -> str:
+                disc_cfg: Optional[dict] = None, lean: bool = False) -> str:
         """Visit a profile and follow it, applying filters. Mirrors _unfollow.
 
         Returns one of: 'ok', 'already_following', 'unavailable',
         'skipped_follows_you', 'skipped_private', 'skipped_no_posts',
-        'skipped_filtered', 'rate_limited (...)', or a transient failure string."""
+        'skipped_filtered', 'rate_limited (...)', or a transient failure string.
+
+        lean=True (external-scraper mode): the scraper already vetted this account,
+        so skip the redundant filter reads (private / counts / discovery) — just
+        confirm we're not already following, then follow cleanly."""
         filters = filters or {}
         self._step(target, "opening profile")
         page.goto(f"https://www.instagram.com/{target}/", wait_until="domcontentloaded")
@@ -2482,7 +2526,7 @@ class Bot:
         except Exception:
             self._step(target, "profile unavailable", "bad")
             return "unavailable"
-        self._jitter(2.0, 4.5)
+        self._jitter(1.0, 2.5) if lean else self._jitter(2.0, 4.5)
         self._random_mouse(page)
 
         # Already following (or request pending)? Nothing to do.
@@ -2490,27 +2534,28 @@ class Bot:
             self._step(target, "already following", "neutral")
             return "already_following"
 
-        # They already follow us — skip if configured (no point spending a follow
-        # on someone already in our followers when the goal is net-new reach).
-        if filters.get("skip_already_follows_me", True) and self._follows_you(page):
-            self._step(target, "they already follow you — skip", "neutral")
-            return "skipped_follows_you"
+        if not lean:
+            # They already follow us — skip if configured (no point spending a follow
+            # on someone already in our followers when the goal is net-new reach).
+            if filters.get("skip_already_follows_me", True) and self._follows_you(page):
+                self._step(target, "they already follow you — skip", "neutral")
+                return "skipped_follows_you"
 
-        if filters.get("skip_private", True) and self._is_private(page):
-            self._step(target, "private account — skip", "neutral")
-            return "skipped_private"
+            if filters.get("skip_private", True) and self._is_private(page):
+                self._step(target, "private account — skip", "neutral")
+                return "skipped_private"
 
-        counts = self._read_profile_counts(page)
-        # Discovery runs BEFORE the follow filters so niche influencers (who are
-        # usually filtered out by max_followers) still get queued as sources.
-        self._maybe_discover_source(page, target, counts, disc_cfg or {})
-        reason = self._passes_filters(counts, filters)
-        if reason == "no_posts":
-            self._step(target, "no posts — skip", "neutral")
-            return "skipped_no_posts"
-        if reason == "filtered":
-            self._step(target, "filtered out (followers/following limits)", "neutral")
-            return "skipped_filtered"
+            counts = self._read_profile_counts(page)
+            # Discovery runs BEFORE the follow filters so niche influencers (who are
+            # usually filtered out by max_followers) still get queued as sources.
+            self._maybe_discover_source(page, target, counts, disc_cfg or {})
+            reason = self._passes_filters(counts, filters)
+            if reason == "no_posts":
+                self._step(target, "no posts — skip", "neutral")
+                return "skipped_no_posts"
+            if reason == "filtered":
+                self._step(target, "filtered out (followers/following limits)", "neutral")
+                return "skipped_filtered"
 
         btn = self._find_follow_button(page)
         if btn is None:
@@ -3356,69 +3401,66 @@ class Bot:
         my_username = (os.getenv("IG_USERNAME") or "").lower()
         done_set = self._follow_done_set(whitelist, my_username)
 
-        candidates = read_follow_candidates()
-        targets = [c for c in candidates if c["username"] not in done_set]
-
-        # Auto top-up: if the eligible pool is below candidate_pool_min and any
-        # sources are configured, scrape more strangers before following.
-        # Skipped entirely when an external scraper service owns the pool — the
-        # core bot then only consumes the cleaned pool it publishes.
         sources = follow_cfg.get("sources", {}) or {}
         has_sources = bool((sources.get("follower_profiles") or [])
                            or (sources.get("liker_posts") or []))
         external_scraper = bool(follow_cfg.get("external_scraper", False))
         pool_min = int(follow_cfg.get("candidate_pool_min", 300))
-        if (not external_scraper and has_sources and len(targets) < pool_min
-                and not self._stop_event.is_set()):
-            self.state.update(phase_detail=f"pool low ({len(targets)}) — scraping sources")
-            try:
-                self._scrape_candidates(page, cfg)
-            except Exception as e:
-                self.state.emit("log", {"level": "error", "msg": f"scrape failed: {e}"})
-            candidates = read_follow_candidates()
-            targets = [c for c in candidates if c["username"] not in done_set]
-
-        # When an external scraper owns the pool, only follow accounts it has
-        # already evaluated and KEPT (filter_checked.log) — never the raw,
-        # not-yet-filtered candidates it's still grinding through. This is what
-        # makes "follow only scraped + filtered users" actually hold.
-        if external_scraper:
-            checked = {r["username"] for r in read_filter_checked_log()}
-            targets = [c for c in targets if c["username"] in checked]
-
-        self.state.update(
-            status="running",
-            daily_cap=daily_cap,
-            candidate_pool=len(targets),
-            total_targets=min(len(targets), daily_cap),
-            progress_index=0,
-            phase_detail=f"{len(targets)} eligible candidate(s) to follow",
-        )
-        if not targets:
-            extra = (f" ({len(candidates)} in pool, all already followed/skipped/filtered)"
-                     if candidates else " (pool is empty)")
-            self.state.update(
-                phase_detail=f"no eligible candidates to follow{extra}",
-                last_message="nothing to follow — add new accounts to the candidate pool",
-            )
-            return "exhausted"
 
         processed = 0
         consecutive_errors = 0
         rate_limit_hits = 0
-        for cand in targets:
-            target = cand["username"]
-            source = cand.get("source", "")
-            if self._stop_event.is_set():
-                return "stopped"
+        seen: set[str] = set()   # attempted this call (so a failure isn't retried in-loop)
+
+        # follow_candidates is the ELIGIBLE result list (scraper-vetted, or self-
+        # scraped when no external scraper). We re-read it every follow so newly-
+        # vetted accounts are picked up immediately, with no comparison needed.
+        while not self._stop_event.is_set():
             if processed >= daily_cap:
                 self.state.update(phase_detail=f"daily cap {daily_cap} reached")
                 return "cap"
 
+            done_set = self._follow_done_set(whitelist, my_username)
+            candidates = read_follow_candidates()
+            eligible = [c for c in candidates
+                        if c["username"] not in done_set and c["username"] not in seen]
+
+            # Core-bot self-scrape top-up (only when no external scraper owns the pool).
+            if (not external_scraper and has_sources and len(eligible) < pool_min
+                    and not self._stop_event.is_set()):
+                self.state.update(phase_detail=f"pool low ({len(eligible)}) — scraping sources")
+                try:
+                    self._scrape_candidates(page, cfg)
+                except Exception as e:
+                    self.state.emit("log", {"level": "error", "msg": f"scrape failed: {e}"})
+                candidates = read_follow_candidates()
+                eligible = [c for c in candidates
+                            if c["username"] not in done_set and c["username"] not in seen]
+
+            self.state.update(
+                status="running", daily_cap=daily_cap, candidate_pool=len(eligible),
+                total_targets=processed + min(len(eligible), max(0, daily_cap - processed)),
+                progress_index=processed + 1,
+                phase_detail=f"{len(eligible)} eligible candidate(s) to follow",
+            )
+            if not eligible:
+                if processed == 0:
+                    self.state.update(
+                        phase_detail="no eligible candidates yet"
+                                     + ("" if candidates else " (pool empty)"),
+                        last_message="nothing to follow — waiting for the scraper / sources",
+                    )
+                return "exhausted"
+
+            cand = eligible[0]
+            target = cand["username"]
+            source = cand.get("source", "")
+            seen.add(target)
             self.state.update(current_target=target, progress_index=processed + 1)
 
             try:
-                result = self._follow(page, target, filters, disc_cfg)
+                result = self._follow(page, target, filters, disc_cfg,
+                                      lean=external_scraper)
             except Exception as e:
                 result = "error"
                 self.state.emit("log", {"level": "error", "msg": f"exception on {target}: {e}"})
@@ -3504,37 +3546,42 @@ class Bot:
             else:
                 self._jitter(1.0, 3.0)
 
-        return "exhausted"
+        return "stopped"
 
     # --- churn (follow -> wait -> unfollow non-followers-back) ---
 
     def _process_churn_cycle(self, page, cfg) -> str:
-        """One churn cycle: follow new strangers (with auto top-up), then review
-        old follows and unfollow the ones who didn't follow back. Returns the
-        usual 'cap'/'exhausted'/'stopped'/'block'."""
-        # Phase 1 — follow (reuses scraping top-up, follow cap, pacing, backoff).
-        follow_outcome = self._process_follow_day(page, cfg)
-        if follow_outcome in ("stopped", "block"):
-            return follow_outcome
-        if self._stop_event.is_set():
-            return "stopped"
-        # Phase 2 — unfollow non-followers-back among aged follows.
+        """One churn cycle. UNFOLLOWS RUN FIRST (so they actually happen and are
+        visible promptly each cycle, instead of being stuck behind a long follow
+        phase), THEN follow new strangers. Returns 'cap'/'exhausted'/'stopped'/
+        'block'."""
+        churn_cfg = (cfg.get("follow", {}) or {}).get("churn", {}) or {}
+
+        # Phase 1 — review aged follows; unfollow those who didn't follow back.
+        # (Needs follows older than unfollow_after_days, so it's a no-op until your
+        # first follows age — nothing to unfollow on day one.)
         churn_outcome = self._process_churn_unfollows(page, cfg)
         if churn_outcome in ("stopped", "block"):
             return churn_outcome
         if self._stop_event.is_set():
             return "stopped"
 
-        # Phase 3 (optional) — also trim the EXISTING following list: unfollow
+        # Phase 2 (optional) — trim the EXISTING following list: unfollow
         # non-whitelisted accounts from data/following.json so the user can keep
-        # shrinking their following toward a target while marketing runs. Off by
-        # default; controlled by churn.also_unfollow_following.
-        churn_cfg = (cfg.get("follow", {}) or {}).get("churn", {}) or {}
+        # shrinking their following toward a target. Controlled by
+        # churn.also_unfollow_following. Works immediately (no aging needed).
         if churn_cfg.get("also_unfollow_following", False):
             trim_outcome = self._process_list_trim(page, cfg)
             if trim_outcome in ("stopped", "block"):
                 return trim_outcome
-        return churn_outcome
+            if self._stop_event.is_set():
+                return "stopped"
+
+        # Phase 3 — follow new strangers (consumes the scraper's eligible pool).
+        follow_outcome = self._process_follow_day(page, cfg)
+        if follow_outcome in ("stopped", "block"):
+            return follow_outcome
+        return follow_outcome
 
     def _process_list_trim(self, page, cfg) -> str:
         """Churn add-on: unfollow non-whitelisted accounts from the existing
