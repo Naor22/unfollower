@@ -3271,7 +3271,7 @@ class Bot:
     # --- run loop ---
 
     def _process_day(self, page, following, pacing, unfollowed_log, failed_log,
-                     skipped_log, cap=None, set_gauge=True) -> str:
+                     skipped_log, cap=None, set_gauge=True, max_actions=None) -> str:
         """Run one daily batch of unfollows.
 
         Re-reads the whitelist and the done set (unfollowed + skipped) fresh, so
@@ -3305,6 +3305,7 @@ class Bot:
             return "exhausted"
 
         processed = 0
+        attempts = 0            # accounts touched this call (for the batch limit)
         consecutive_errors = 0  # only real unfollow failures, reset on success
         rate_limit_hits = 0     # soft-block ('Try Again Later') hits this batch
         for target in targets:
@@ -3313,6 +3314,9 @@ class Bot:
             if processed >= cap:
                 self.state.update(phase_detail=f"daily cap {cap} reached")
                 return "cap"
+            if max_actions is not None and attempts >= max_actions:
+                return "cap"   # batch limit — more may remain
+            attempts += 1
 
             if set_gauge:
                 self.state.update(current_target=target, progress_index=processed + 1)
@@ -3435,12 +3439,14 @@ class Bot:
             done.add(my_username.lower())
         return done
 
-    def _process_follow_day(self, page, cfg) -> str:
+    def _process_follow_day(self, page, cfg, max_actions=None) -> str:
         """Run one daily batch of follows pulled from the candidate pool.
 
         Mirrors _process_day: re-reads the whitelist + done set fresh, paces only
         real follows, backs off on soft blocks, and aborts on a run of failures.
-        Returns 'cap' / 'exhausted' / 'stopped' / 'block'."""
+        Returns 'cap' / 'exhausted' / 'stopped' / 'block'. max_actions caps the
+        accounts touched this call (for interleaving) — 'cap' when that batch
+        limit is hit (more may remain), 'exhausted' only when the pool is empty."""
         follow_cfg = cfg.get("follow", {}) or {}
         pacing = cfg["pacing"]
         filters = follow_cfg.get("filters", {}) or {}
@@ -3465,6 +3471,7 @@ class Bot:
         pool_min = int(follow_cfg.get("candidate_pool_min", 300))
 
         processed = 0
+        attempts = 0             # accounts touched this call (for the batch limit)
         consecutive_errors = 0
         rate_limit_hits = 0
         seen: set[str] = set()   # attempted this call (so a failure isn't retried in-loop)
@@ -3476,6 +3483,8 @@ class Bot:
             if processed >= daily_cap:
                 self.state.update(phase_detail=f"daily cap {daily_cap} reached")
                 return "cap"
+            if max_actions is not None and attempts >= max_actions:
+                return "cap"   # batch limit — more may remain, caller re-invokes
 
             done_set = self._follow_done_set(whitelist, my_username)
             candidates = read_follow_candidates()
@@ -3513,6 +3522,7 @@ class Bot:
             target = cand["username"]
             source = cand.get("source", "")
             seen.add(target)
+            attempts += 1
             self.state.update(current_target=target, progress_index=processed + 1)
 
             try:
@@ -3608,39 +3618,67 @@ class Bot:
     # --- churn (follow -> wait -> unfollow non-followers-back) ---
 
     def _process_churn_cycle(self, page, cfg) -> str:
-        """One churn cycle. UNFOLLOWS RUN FIRST (so they actually happen and are
-        visible promptly each cycle, instead of being stuck behind a long follow
-        phase), THEN follow new strangers. Returns 'cap'/'exhausted'/'stopped'/
-        'block'."""
-        churn_cfg = (cfg.get("follow", {}) or {}).get("churn", {}) or {}
+        """One churn cycle, INTERLEAVED: instead of doing all unfollows then all
+        follows, it alternates them in small batches by a ratio (churn.
+        interleave_unfollows : interleave_follows), so both progress together and
+        the activity reads as steady mixed marketing. The story-reach layer keeps
+        firing inside each batch (every action calls the reach tick), so reach runs
+        alongside automatically. Returns 'cap'/'exhausted'/'stopped'/'block'."""
+        follow_cfg = cfg.get("follow", {}) or {}
+        churn_cfg = follow_cfg.get("churn", {}) or {}
+        unf_per = max(1, int(churn_cfg.get("interleave_unfollows", 2)))
+        fol_per = max(1, int(churn_cfg.get("interleave_follows", 1)))
+        also_trim = bool(churn_cfg.get("also_unfollow_following", False))
 
-        # Phase 1 — review aged follows; unfollow those who didn't follow back.
-        # (Needs follows older than unfollow_after_days, so it's a no-op until your
-        # first follows age — nothing to unfollow on day one.)
-        churn_outcome = self._process_churn_unfollows(page, cfg)
-        if churn_outcome in ("stopped", "block"):
-            return churn_outcome
-        if self._stop_event.is_set():
-            return "stopped"
+        # Approximate per-cycle budgets (rounds × batch). Real actions may be fewer
+        # when accounts skip, which only makes us gentler — safe.
+        u_cap = int(churn_cfg.get("daily_unfollow_cap", 80))
+        t_cap = int(churn_cfg.get("list_unfollow_cap", 40))
+        f_cap = int(follow_cfg.get("daily_cap", 80))
+        u_used = t_used = f_used = 0
+        # 'dead' = that source ran out of accounts (exhausted) this cycle.
+        u_dead = False
+        t_dead = not also_trim
+        f_dead = False
 
-        # Phase 2 (optional) — trim the EXISTING following list: unfollow
-        # non-whitelisted accounts from data/following.json so the user can keep
-        # shrinking their following toward a target. Controlled by
-        # churn.also_unfollow_following. Works immediately (no aging needed).
-        if churn_cfg.get("also_unfollow_following", False):
-            trim_outcome = self._process_list_trim(page, cfg)
-            if trim_outcome in ("stopped", "block"):
-                return trim_outcome
-            if self._stop_event.is_set():
-                return "stopped"
+        while not self._stop_event.is_set():
+            progressed = False
 
-        # Phase 3 — follow new strangers (consumes the scraper's eligible pool).
-        follow_outcome = self._process_follow_day(page, cfg)
-        if follow_outcome in ("stopped", "block"):
-            return follow_outcome
-        return follow_outcome
+            # --- unfollow batch: aged-review first ---
+            if not u_dead and u_used < u_cap:
+                out = self._process_churn_unfollows(page, cfg, max_actions=unf_per)
+                if out in ("stopped", "block"):
+                    return out
+                u_used += unf_per
+                u_dead = (out == "exhausted")
+                progressed = progressed or not u_dead
+            # --- unfollow batch: list-trim (shrink the existing following list) ---
+            if not t_dead and t_used < t_cap:
+                out = self._process_list_trim(page, cfg, max_actions=unf_per)
+                if out in ("stopped", "block"):
+                    return out
+                t_used += unf_per
+                t_dead = (out == "exhausted")
+                progressed = progressed or not t_dead
+            # --- follow batch ---
+            if not f_dead and f_used < f_cap:
+                out = self._process_follow_day(page, cfg, max_actions=fol_per)
+                if out in ("stopped", "block"):
+                    return out
+                f_used += fol_per
+                f_dead = (out == "exhausted")
+                progressed = progressed or not f_dead
 
-    def _process_list_trim(self, page, cfg) -> str:
+            u_busy = (not u_dead and u_used < u_cap)
+            t_busy = (not t_dead and t_used < t_cap)
+            f_busy = (not f_dead and f_used < f_cap)
+            if not (u_busy or t_busy or f_busy):
+                return "exhausted"   # every source capped or drained
+            if not progressed:
+                return "exhausted"   # a full round did nothing — back off (keep_running re-checks)
+        return "stopped"
+
+    def _process_list_trim(self, page, cfg, max_actions=None) -> str:
         """Churn add-on: unfollow non-whitelisted accounts from the existing
         following cache (data/following.json), reusing the full unfollow
         fallback chain. Uses its own small cap (churn.list_unfollow_cap) so it
@@ -3661,12 +3699,16 @@ class Bot:
             _log_path("unfollowed_log", "data/unfollowed.log"),
             _log_path("failed_log", "data/failed.log"),
             _log_path("skipped_log", "data/skipped.log"),
-            cap=cap, set_gauge=False,
+            cap=cap, set_gauge=False, max_actions=max_actions,
         )
 
-    def _process_churn_unfollows(self, page, cfg) -> str:
+    def _process_churn_unfollows(self, page, cfg, max_actions=None) -> str:
         """Visit follows older than unfollow_after_days; keep the ones who
-        followed back, unfollow the rest (up to daily_unfollow_cap)."""
+        followed back, unfollow the rest (up to daily_unfollow_cap).
+
+        max_actions caps how many accounts are touched this call (for interleaving)
+        — 'cap' is returned when that batch limit is hit (more may remain),
+        'exhausted' only when nothing is left to review."""
         follow_cfg = cfg.get("follow", {}) or {}
         churn_cfg = follow_cfg.get("churn", {}) or {}
         pacing = cfg["pacing"]
@@ -3708,6 +3750,7 @@ class Bot:
             return "exhausted"
 
         processed = 0          # real unfollows (counts toward the cap)
+        attempts = 0           # accounts touched this call (for the batch limit)
         consecutive_errors = 0
         rate_limit_hits = 0
         for u in due:
@@ -3716,6 +3759,9 @@ class Bot:
             if processed >= daily_unfollow_cap:
                 self.state.update(phase_detail=f"churn cap {daily_unfollow_cap} reached")
                 return "cap"
+            if max_actions is not None and attempts >= max_actions:
+                return "cap"   # batch limit — more may remain, caller re-invokes
+            attempts += 1
 
             self.state.update(current_target=u)
             ts = time.strftime("%Y-%m-%d %H:%M:%S")

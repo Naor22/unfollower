@@ -35,6 +35,8 @@ DEFAULT_FOLLOW = {
         "daily_unfollow_cap": 80,
         "also_unfollow_following": False,  # also trim the existing following list each cycle
         "list_unfollow_cap": 40,           # max list-trim unfollows per churn cycle
+        "interleave_unfollows": 2,         # interleave ratio (unfollows : follows per round)
+        "interleave_follows": 1,
     },
 }
 

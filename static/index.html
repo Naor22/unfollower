@@ -1353,8 +1353,10 @@
                         <div><label>Unfollow after (days)</label><input type="number" x-model.number="config.follow.churn.unfollow_after_days" /></div>
                         <div><label>Daily unfollow cap</label><input type="number" x-model.number="config.follow.churn.daily_unfollow_cap" /></div>
                         <div><label>List-trim cap / cycle</label><input type="number" x-model.number="config.follow.churn.list_unfollow_cap" /></div>
+                        <div><label>Interleave: unfollows / round</label><input type="number" x-model.number="config.follow.churn.interleave_unfollows" /></div>
+                        <div><label>Interleave: follows / round</label><input type="number" x-model.number="config.follow.churn.interleave_follows" /></div>
                       </div>
-                      <p class="hint" style="margin-top:8px;">“Also trim following list” unfollows non-whitelisted accounts from your imported following list (data/following.json) each cycle — use it to keep shrinking your following toward a target while marketing runs.</p>
+                      <p class="hint" style="margin-top:8px;">Churn now <strong>interleaves</strong> follows &amp; unfollows in small batches per the ratio above (e.g. 2 : 1 = two unfollows for every follow → shrinks while marketing). “Also trim following list” unfollows non-whitelisted accounts from your imported list (data/following.json) so you keep shrinking toward a target. Reach (post-likes) keeps running alongside automatically.</p>
                     </div>
                   </template>
 
