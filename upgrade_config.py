@@ -69,6 +69,8 @@ DEFAULT_PACING = {
 
 DEFAULT_SCRAPER = {
     "enabled": False,
+    "coordinate_with_bot": True,   # only scrape during the bot's dead time
+    "pool_high_mult": 5,           # stop once ready pool >= this × follow.daily_cap
     # Persistent-profile model (like the main bot): cdp_endpoint "" + user_data_dir,
     # logged in once via scraper_login.py. Set cdp_endpoint to a :9223 URL to use CDP.
     "cdp_endpoint": "",

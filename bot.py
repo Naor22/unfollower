@@ -36,6 +36,7 @@ ACCOUNT_STATS = DATA_DIR / "account_stats.json"
 SCRAPER_STATUS = DATA_DIR / "scraper_status.json"   # separate scraper service heartbeat/counts
 SCRAPER_PID = DATA_DIR / "scraper.pid"              # so the server can track/stop the scraper
 DAILY_COUNTS = DATA_DIR / "daily_counts.json"       # real per-CALENDAR-DAY action ledger (ban safety)
+BOT_RUNTIME = DATA_DIR / "bot_runtime.json"         # bot "acting" signal so the scraper yields the Pi
 ACTIVITY_LOG = DATA_DIR / "activity.json"   # shared live-activity feed (all devices)
 ACTIVITY_MAX = 1000                          # ring buffer cap (auto-cleanup)
 
@@ -619,10 +620,38 @@ class Bot:
 
     # --- timing helpers ---
 
+    def _set_acting(self, acting: bool) -> None:
+        """Publish whether the main bot is actively working, so the separate scraper
+        process can yield the Pi (only scrape during the bot's dead time). Refreshed
+        periodically while acting (see _interruptible_sleep) for crash detection."""
+        self._acting = acting
+        self._acting_written = time.time()
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = BOT_RUNTIME.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"acting": acting, "ts": time.time()}), encoding="utf-8")
+            os.replace(tmp, BOT_RUNTIME)
+        except Exception:
+            pass
+
+    def _bot_is_acting(self) -> bool:
+        """Used by the scraper process: is the main bot actively working right now?
+        (Fresh 'acting' flag — stale/absent means idle or crashed → free to scrape.)"""
+        try:
+            d = json.loads(BOT_RUNTIME.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return bool(d.get("acting")) and (time.time() - float(d.get("ts", 0))) < 90
+
     def _interruptible_sleep(self, seconds: float) -> None:
         end = time.monotonic() + seconds
         while True:
             self.state.touch()   # heartbeat: a sleeping bot is alive, a hung one isn't
+            # Keep the 'acting' signal fresh through long internal waits (jitter /
+            # long-breaks) so the scraper stays paused while the bot is mid-cycle.
+            if getattr(self, "_acting", False) and \
+                    time.time() - getattr(self, "_acting_written", 0) > 30:
+                self._set_acting(True)
             if self._stop_event.is_set():
                 return
             if self._pause_event.is_set():
@@ -2157,6 +2186,15 @@ class Bot:
 
     # ---- standalone scraper+filter service (separate process / 2nd Chrome) ----
 
+    def _pool_ready(self, cfg) -> int:
+        """Count of eligible candidates ready for the bot to follow (result list
+        minus the done-set). Drives the scraper's high/low-water gating."""
+        try:
+            done = self._follow_done_set(load_whitelist(), self._me)
+            return sum(1 for c in read_follow_candidates() if c["username"] not in done)
+        except Exception:
+            return 0
+
     def _write_scraper_status(self, error: Optional[str] = None,
                               phase: str = "") -> None:
         """Heartbeat + counts for the dashboard's Scraper card. Atomic write so the
@@ -2245,10 +2283,20 @@ class Bot:
                    and c["username"] not in result_set]
         self.state.emit("log", {"level": "info", "msg": f"vetting {len(pending)} candidate(s)"})
         self._write_scraper_status(phase=f"vetting {len(pending)}")
+        coordinate = scr.get("coordinate_with_bot", True)
+        high = max(1, int(follow_cfg.get("daily_cap", 30)) * int(scr.get("pool_high_mult", 5)))
         processed = 0
         for c in todo:
             if self._stop_event.is_set():
                 break
+            # Yield the Pi the instant the bot starts working, and stop once the
+            # ready pool reaches the high-water mark (checked every few profiles).
+            if processed and processed % 3 == 0:
+                if coordinate and self._bot_is_acting():
+                    self._write_scraper_status(phase="paused — bot became active")
+                    break
+                if self._pool_ready(cfg) >= high:
+                    break
             u = c["username"]
             if u in resolved or u in done or u in result_set:
                 continue
@@ -2335,6 +2383,21 @@ class Bot:
                     if not scr.get("enabled", False):
                         self._write_scraper_status(phase="disabled (toggle off)")
                         self._interruptible_sleep(30)
+                        continue
+                    # Coordinate with the bot so they don't fight over the Pi: only
+                    # scrape during the bot's DEAD TIME, and only when the ready pool
+                    # is below the high-water mark (pool_high_mult × daily_cap).
+                    coordinate = scr.get("coordinate_with_bot", True)
+                    daily_cap = int((day_cfg.get("follow", {}) or {}).get("daily_cap", 30))
+                    high = max(1, daily_cap * int(scr.get("pool_high_mult", 5)))
+                    ready = self._pool_ready(day_cfg)
+                    if coordinate and self._bot_is_acting():
+                        self._write_scraper_status(phase=f"idle — bot active (pool ready {ready}/{high})")
+                        self._interruptible_sleep(60)
+                        continue
+                    if ready >= high:
+                        self._write_scraper_status(phase=f"pool full — {ready} ready (≥ {high}); idle")
+                        self._interruptible_sleep(idle)
                         continue
                     # 1. scrape raw usernames into the TODO backlog (exclude anything
                     #    already vetted into the result list or already rejected).
@@ -4378,6 +4441,7 @@ class Bot:
                     # Outside the configured active hours → sleep until the window opens.
                     gate_secs = self._seconds_until_active(day_cfg)
                     if gate_secs > 0:
+                        self._set_acting(False)   # dead time → scraper may run
                         self.state.update(
                             status="sleeping", current_target=None,
                             phase_detail=f"outside active hours — resuming in ~{gate_secs / 3600:.1f}h",
@@ -4387,6 +4451,7 @@ class Bot:
                         continue
                     # Hit today's caps → sleep to the next local day (caps re-roll then).
                     if self._day_capped_for_mode(day_cfg, mode):
+                        self._set_acting(False)   # done for the day → scraper's prime time
                         gate_secs = self._seconds_until_tomorrow()
                         self.state.update(
                             status="sleeping", current_target=None,
@@ -4395,6 +4460,8 @@ class Bot:
                         self._interruptible_sleep(gate_secs)
                         self.state.update(next_action_at=None)
                         continue
+
+                    self._set_acting(True)   # entering an active cycle → scraper pauses
 
                     # Seed/re-sync our own follower & following counts for the
                     # status bar at the start of every batch (per-action ±1 keeps
@@ -4470,6 +4537,7 @@ class Bot:
                     wake = time.time() + sleep_s
                     human = (f"~{sleep_s / 60:.0f}m" if sleep_s < 3600
                              else f"~{sleep_s / 3600:.1f}h")
+                    self._set_acting(False)   # between cycles → scraper may run
                     self.state.update(
                         status="sleeping", current_target=None,
                         phase_detail=f"{note}; next cycle in {human}",
@@ -4508,6 +4576,7 @@ class Bot:
         except Exception as e:
             self.state.update(status="error", error=str(e), next_action_at=None)
         finally:
+            self._set_acting(False)   # bot stopped → scraper free to run
             # Always tear down the background story worker when the run ends.
             self._story_stop.set()
             self._story_worker_active = False

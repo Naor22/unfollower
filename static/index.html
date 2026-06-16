@@ -1368,16 +1368,18 @@
                         <div class="switch-cell"><span class="sc-label">Use external scraper (core bot stops scraping)</span><label class="switch"><input type="checkbox" x-model="config.follow.external_scraper" /><span class="track"></span></label></div>
                         <div class="switch-cell"><span class="sc-label">Keep running when pool is empty</span><label class="switch"><input type="checkbox" x-model="config.behavior.keep_running" /><span class="track"></span></label></div>
                         <div class="switch-cell"><span class="sc-label">Scraper service enabled</span><label class="switch"><input type="checkbox" x-model="config.scraper.enabled" /><span class="track"></span></label></div>
+                        <div class="switch-cell"><span class="sc-label">Only scrape in bot's dead-time</span><label class="switch"><input type="checkbox" x-model="config.scraper.coordinate_with_bot" /><span class="track"></span></label></div>
                       </div>
                       <div class="form-grid">
                         <div><label>Idle re-check min (min)</label><input type="number" x-model.number="config.behavior.idle_recheck_min" /></div>
                         <div><label>Idle re-check max (min)</label><input type="number" x-model.number="config.behavior.idle_recheck_max" /></div>
+                        <div><label>Pool high-water (× daily cap)</label><input type="number" x-model.number="config.scraper.pool_high_mult" /></div>
                         <div><label>Scraper Chrome CDP endpoint</label><input type="text" x-model="config.scraper.cdp_endpoint" /></div>
                         <div><label>Scrape pass gap (sec)</label><input type="number" x-model.number="config.scraper.idle_seconds" /></div>
                         <div><label>Filter delay min (s)</label><input type="number" x-model.number="config.scraper.min_delay" /></div>
                         <div><label>Filter delay max (s)</label><input type="number" x-model.number="config.scraper.max_delay" /></div>
                       </div>
-                      <p class="hint" style="margin-top:8px;">The scraper runs as a separate service on a 2nd Chrome (burner account) — see DEPLOY.md. <strong>Use external scraper</strong> makes the core bot consume its cleaned pool instead of scraping itself; <strong>Keep running</strong> stops the bot from halting when the pool is momentarily empty (it sleeps &amp; re-checks). Watch live status under System → Scraper service.</p>
+                      <p class="hint" style="margin-top:8px;">The scraper runs as a separate service on a 2nd Chrome (burner account) — see DEPLOY.md. <strong>Only scrape in bot's dead-time</strong> pauses the scraper while the bot is actively working (no Pi contention) and lets it build the pool when the bot is sleeping/done-for-day; it stops once the ready pool reaches <strong>high-water × daily cap</strong>. <strong>Use external scraper</strong> makes the core bot consume its cleaned pool; <strong>Keep running</strong> stops the bot halting on an empty pool. Watch live status under System → Scraper service.</p>
                     </div>
                   </template>
                 </div>
