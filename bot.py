@@ -556,6 +556,7 @@ class Bot:
         self._me = ""  # logged-in handle; set in _run, used by the modal fallback
         self._run_skip = set()  # accounts that hard-failed THIS run — skip so one
                                 # poison profile can't jam the queue every batch
+        self._warmed = False    # one-time external-scraper pool warm-up gate
         self._actions_since_resync = 0  # drives periodic account-count re-sync
         self._story_tick = 0            # interleaved story-reach: actions since last view
         self._story_today = 0           # stories viewed this batch (vs daily cap)
@@ -4269,6 +4270,7 @@ class Bot:
             password = os.getenv("IG_PASSWORD")
             self._me = (username or "").lstrip("@").lower()
             self._run_skip = set()   # fresh each run; poison accounts get another chance next run
+            self._warmed = False     # one-time pool warm-up gate (external scraper)
             if not username or not password:
                 self.state.update(status="error", error="IG_USERNAME / IG_PASSWORD not set")
                 return
@@ -4460,6 +4462,27 @@ class Bot:
                         self._interruptible_sleep(gate_secs)
                         self.state.update(next_action_at=None)
                         continue
+
+                    # Warm-up gate (one-time at start): with an external scraper, don't
+                    # begin working until the ready pool holds at least a full daily cap.
+                    # Stay fully idle so the scraper (which only runs in our dead-time)
+                    # fills it first. Once filled, we mark warmed and run normally — the
+                    # scraper keeps it topped up (to pool_high_mult × cap) in our gaps.
+                    if (not self._warmed and mode in ("follow", "churn")
+                            and (day_cfg.get("follow", {}) or {}).get("external_scraper", False)):
+                        cap = int((day_cfg.get("follow", {}) or {}).get("daily_cap", 30))
+                        ready = self._pool_ready(day_cfg)
+                        if ready < cap:
+                            self._set_acting(False)   # hand the Pi to the scraper
+                            self.state.update(
+                                status="sleeping", current_target=None,
+                                phase_detail=f"warming up — scraper filling the pool ({ready}/{cap})",
+                                next_action_at=None)
+                            self._interruptible_sleep(30)
+                            continue
+                        self._warmed = True
+                        self.state.emit("log", {"level": "info",
+                            "msg": f"pool warmed up ({ready} ready ≥ {cap}) — starting"})
 
                     self._set_acting(True)   # entering an active cycle → scraper pauses
 

@@ -1574,9 +1574,17 @@
         ACTIVITY_MAX: 300,
 
         async init() {
-          await this.loadActivityFromServer();
+          // Establish polling FIRST so a slow/failed initial load can't skip it.
+          setInterval(() => { this._tick++; }, 1000); // re-render countdown
+          // Keep the follow totals (incl. "Pending to follow") live even when the bot
+          // is OFF — the scraper fills the pool in a separate process (no WS event),
+          // so poll the follow lists on a timer while in follow/churn mode.
+          setInterval(() => { if (this.isFollowMode()) this.refreshFollowLists(true); }, 10000);
+
+          try { await this.loadActivityFromServer(); } catch (e) {}
           this.connectWS();
-          await Promise.all([
+          // allSettled so one failing endpoint never aborts the rest of init.
+          await Promise.allSettled([
             this.refreshState(),
             this.refreshLists(),
             this.refreshFollowLists(),
@@ -1588,14 +1596,8 @@
             this.loadDiscovered(),
           ]);
           // Refresh account counts on open (no-op while running / if just fetched).
-          // The fresh numbers arrive via the WS state update.
           this.fetch('/api/account/refresh', { method: 'POST' }).catch(() => {});
           this.restoreDeployDir();   // re-link the deploy folder if granted before
-          setInterval(() => { this._tick++; }, 1000); // re-render countdown
-          // Keep the follow totals (incl. "Pending to follow") live: the scraper
-          // adds eligible accounts in a separate process, which sends no WS event,
-          // so poll the follow lists periodically while in follow/churn mode.
-          setInterval(() => { if (this.isFollowMode()) this.refreshFollowLists(); }, 15000);
         },
 
         go(tab) {
@@ -1884,13 +1886,13 @@
           } catch (e) { this.showToast(e.message, 'error'); }
         },
 
-        async refreshFollowLists() {
+        async refreshFollowLists(silent) {
           try {
             const j = await this.fetch('/api/follow-lists');
             this.followed = j.followed; this.followSkipped = j.follow_skipped;
             this.followFailed = j.follow_failed; this.followKept = j.follow_kept || [];
             this.churnUnfollowed = j.churn_unfollowed || []; this.followTotals = j.totals;
-          } catch (e) { this.showToast(e.message, 'error'); }
+          } catch (e) { if (!silent) this.showToast(e.message, 'error'); }
         },
 
         async refreshAll() {
