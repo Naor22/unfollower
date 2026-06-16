@@ -426,6 +426,11 @@ async def get_follow_lists():
              if r["reason"] in bot.PERMANENT_FOLLOW_SKIPS}
     done |= {r["username"].lower() for r in churn_unfollowed}
     pending = [c for c in candidates if c["username"] not in done]
+    # With an external scraper, the bot follows ONLY vetted accounts — so "pending"
+    # must mirror that (checked & not yet actioned), not the whole raw pool.
+    if (bot.load_config().get("follow", {}) or {}).get("external_scraper", False):
+        checked = {r["username"].lower() for r in bot.read_filter_checked_log()}
+        pending = [c for c in pending if c["username"] in checked]
 
     return {
         "candidates": candidates,
@@ -770,7 +775,7 @@ async def scraper_status():
             data = {"present": False}
         ts = float(data.get("ts", 0) or 0)
         data["age"] = int(time.time() - ts) if ts else None
-        data["running"] = running or bool(ts and (time.time() - ts) < 180)
+        data["running"] = running   # PID liveness is authoritative (covers all launchers)
     return data
 
 

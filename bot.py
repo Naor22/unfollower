@@ -2046,7 +2046,11 @@ class Bot:
         try:
             pool = read_follow_candidates()
             done = self._follow_done_set(load_whitelist(), self._me)
-            ready = sum(1 for c in pool if c["username"] not in done)
+            checked = {r["username"] for r in read_filter_checked_log()}
+            # "ready" = what the bot can actually follow now: vetted (passed the
+            # filter) AND not already followed/skipped/churned.
+            ready = sum(1 for c in pool
+                        if c["username"] in checked and c["username"] not in done)
         except Exception:
             pool, ready = [], 0
         status = {
