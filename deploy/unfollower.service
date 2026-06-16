@@ -1,0 +1,18 @@
+[Unit]
+Description=Instagram Unfollower (dashboard + daily bot)
+# Start after the network (and Tailscale, if used) is up.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User and paths to match your Pi (these assume user "pi").
+User=pi
+WorkingDirectory=/home/pi/unfollower
+ExecStart=/home/pi/unfollower/.venv/bin/python server.py
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

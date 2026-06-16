@@ -1,0 +1,1096 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Unfollower</title>
+  <script defer src="https://unpkg.com/alpinejs@3.14.7/dist/cdn.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --bg-elev: #161a23;
+      --bg-elev-2: #1d2230;
+      --border: #2a2f3a;
+      --text: #e6e9ef;
+      --muted: #8a93a3;
+      --accent: #4f7cff;
+      --accent-hover: #6b91ff;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --info: #60a5fa;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; line-height: 1.5; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); }
+    button { font: inherit; cursor: pointer; border: 1px solid var(--border); background: var(--bg-elev); color: var(--text); padding: 8px 14px; border-radius: 6px; }
+    button:hover:not(:disabled) { background: var(--bg-elev-2); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+    button.danger { background: var(--danger); border-color: var(--danger); color: white; }
+    button.danger:hover:not(:disabled) { background: #ef5e5e; }
+    button.ghost { background: transparent; }
+    input, textarea, select { font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 8px 10px; border-radius: 6px; width: 100%; }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 16px; }
+    header.app-header { position: sticky; top: 0; z-index: 10; background: rgba(15,17,21,0.92); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+    .header-row { display: flex; align-items: center; gap: 16px; padding: 14px 16px; max-width: 1280px; margin: 0 auto; }
+    .title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+    .status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.idle { background: var(--muted); }
+    .dot.starting, .dot.logging_in, .dot.warmup, .dot.scraping { background: var(--info); animation: pulse 1.5s ease-in-out infinite; }
+    .dot.running { background: var(--success); animation: pulse 1.2s ease-in-out infinite; }
+    .dot.paused { background: var(--warning); }
+    .dot.sleeping { background: var(--info); }
+    .dot.stopped { background: var(--muted); }
+    .dot.error { background: var(--danger); }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .grow { flex: 1; }
+    .phase { color: var(--muted); font-size: 13px; }
+    .progress-wrap { width: 220px; height: 6px; background: var(--bg-elev); border-radius: 999px; overflow: hidden; }
+    .progress-bar { height: 100%; background: var(--accent); transition: width 0.3s ease; }
+    .actions { display: flex; gap: 8px; padding: 8px 16px 14px; max-width: 1280px; margin: 0 auto; border-bottom: 1px solid var(--border); }
+    .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    .card-title { font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px; }
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 16px 0 0; }
+    .tab { padding: 10px 16px; background: transparent; border: none; border-radius: 0; color: var(--muted); border-bottom: 2px solid transparent; }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+    .tab:hover:not(.active) { color: var(--text); }
+    .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .stat { padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+    .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+    .stat .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .stat .value.success { color: var(--success); }
+    .stat .value.danger { color: var(--danger); }
+    .stat .value.warning { color: var(--warning); }
+    .list { display: flex; flex-direction: column; }
+    .list-row { display: grid; grid-template-columns: 1fr 110px 160px; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    .list-row.following-row { grid-template-columns: 1fr 110px 110px 90px; }
+    .list-row.removable { grid-template-columns: 1fr 120px 150px 84px; }
+    .list-row:last-child { border-bottom: none; }
+    .list-row.current { background: rgba(79, 124, 255, 0.08); }
+    .username { font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, monospace; }
+    a.username { color: var(--accent); }
+    a.username:hover { color: var(--accent-hover); text-decoration: underline; }
+    .row-remove { padding: 4px 8px; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .badge.pending { background: rgba(138,147,163,0.15); color: var(--muted); }
+    .badge.current { background: rgba(96,165,250,0.18); color: var(--info); }
+    .badge.unfollowed { background: rgba(52,211,153,0.16); color: var(--success); }
+    .badge.failed { background: rgba(248,113,113,0.16); color: var(--danger); }
+    .badge.whitelisted { background: rgba(251,191,36,0.16); color: var(--warning); }
+    .badge.skipped { background: rgba(138,147,163,0.18); color: var(--muted); }
+    .badge.followed { background: rgba(52,211,153,0.16); color: var(--success); }
+    .badge.candidate { background: rgba(96,165,250,0.18); color: var(--info); }
+    .mode-select { display: flex; align-items: center; gap: 8px; }
+    .mode-select select { width: auto; min-width: 120px; }
+    .mode-badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; background: rgba(79,124,255,0.18); color: var(--accent); }
+    .list-scroll { max-height: 60vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+    .filter-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .filter-row select { width: auto; }
+    .timestamp { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; color: var(--muted); font-size: 12px; }
+    .empty { padding: 32px; text-align: center; color: var(--muted); }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } }
+    textarea { min-height: 200px; resize: vertical; font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: 13px; }
+    .row-flex { display: flex; gap: 12px; align-items: end; }
+    .row-flex > * { flex: 1; }
+    .toast { position: fixed; bottom: 16px; right: 16px; padding: 10px 16px; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px; z-index: 100; }
+    .toast.error { border-color: var(--danger); }
+    .toast.success { border-color: var(--success); }
+    .small { font-size: 12px; color: var(--muted); }
+    .next-action { font-variant-numeric: tabular-nums; }
+    code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+    /* ---- mobile / iPhone ---- */
+    @media (max-width: 700px) {
+      html, body { font-size: 15px; }
+      .container { padding: 12px; }
+
+      /* header wraps; phase detail + progress bar each get a full-width line */
+      .header-row { flex-wrap: wrap; gap: 8px 10px; padding: 12px; }
+      .header-row .grow { display: none; }
+      .phase { flex-basis: 100%; }
+      .progress-wrap { width: 100%; flex-basis: 100%; }
+
+      /* action buttons wrap and are big enough to tap */
+      .actions { flex-wrap: wrap; gap: 8px; padding: 8px 12px 12px; }
+      .actions .grow { display: none; }
+      .actions button { flex: 1 1 40%; min-height: 44px; }
+
+      /* tabs scroll sideways instead of overflowing the screen */
+      .tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+      .tab { white-space: nowrap; flex: 0 0 auto; }
+
+      /* stats: two per row */
+      .grid-3 { grid-template-columns: 1fr 1fr; gap: 10px; }
+      .stat .value { font-size: 20px; }
+
+      /* list rows: username on its own line, badge/links/buttons below it */
+      .list-row, .list-row.following-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+      .list-row > .username { flex: 1 1 100%; }
+      .list-scroll { max-height: 65vh; }
+
+      /* filters + forms stack full-width; 16px inputs stop iOS zoom-on-focus */
+      .filter-row { flex-wrap: wrap; }
+      .filter-row > * { width: 100%; }
+      .filter-row select { width: 100%; }
+      .form-grid { grid-template-columns: 1fr; }
+      input, select, textarea { font-size: 16px; }
+
+      .toast { left: 12px; right: 12px; bottom: 12px; text-align: center; }
+    }
+  </style>
+</head>
+<body x-data="app()" x-init="init()">
+
+  <header class="app-header">
+    <div class="header-row">
+      <div class="title">unfollower</div>
+      <div class="status-pill">
+        <span class="dot" :class="state.status"></span>
+        <span x-text="state.status"></span>
+      </div>
+      <template x-if="config && config.mode">
+        <span class="mode-badge" x-text="config.mode + ' mode'"></span>
+      </template>
+      <div class="phase" x-text="state.phase_detail || '—'"></div>
+      <div class="grow"></div>
+      <template x-if="state.current_target">
+        <div class="small">current: <code x-text="'@' + state.current_target"></code></div>
+      </template>
+      <template x-if="state.next_action_at && nextActionSeconds() > 0">
+        <div class="small next-action">next action in <span x-text="nextActionSeconds() + 's'"></span></div>
+      </template>
+      <div class="progress-wrap" :title="state.progress_index + ' / ' + state.total_targets">
+        <div class="progress-bar" :style="'width:' + progressPercent() + '%'"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" @click="start()" :disabled="isRunning">Start</button>
+      <button @click="pause()" :disabled="!isRunning || state.status === 'paused'">Pause</button>
+      <button @click="resume()" :disabled="state.status !== 'paused'">Resume</button>
+      <button class="danger" @click="stop()" :disabled="!isRunning">Stop</button>
+      <div class="grow"></div>
+      <button class="ghost" @click="refreshLists()">Refresh lists</button>
+      <button class="ghost" @click="clearCache()" :disabled="isRunning" title="Force re-scrape of the following list on next run">Clear cached following</button>
+    </div>
+  </header>
+
+  <div class="container">
+
+    <div class="card">
+      <template x-if="config">
+        <div class="mode-select" style="margin-bottom: 16px;">
+          <label style="margin: 0;">Mode</label>
+          <select x-model="config.mode" @change="changeMode()">
+            <option value="unfollow">Unfollow (clean up your following list)</option>
+            <option value="follow">Follow (grow from the candidate pool)</option>
+            <option value="churn">Churn (follow → unfollow non-followers-back)</option>
+          </select>
+          <span class="small" x-show="!isRunning">applied on next start</span>
+          <span class="small" x-show="isRunning" style="color: var(--warning);">stop &amp; start to apply</span>
+        </div>
+      </template>
+
+      <!-- UNFOLLOW stats -->
+      <div class="grid-3" x-show="!isFollowMode()">
+        <div class="stat">
+          <div class="label">Following (cached)</div>
+          <div class="value" x-text="totals.following || 0"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Unfollowed this session</div>
+          <div class="value success" x-text="state.unfollowed_count"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Unfollowed total</div>
+          <div class="value success" x-text="totals.unfollowed || 0"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Failed</div>
+          <div class="value danger" x-text="state.failed_count + (totals.failed - (state.failed_count || 0) > 0 ? ' (' + totals.failed + ' total)' : '')"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Skipped (deleted/etc.)</div>
+          <div class="value" x-text="totals.skipped || 0"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Whitelisted</div>
+          <div class="value warning" x-text="totals.whitelisted || 0"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Daily cap</div>
+          <div class="value" x-text="state.daily_cap || '—'"></div>
+        </div>
+      </div>
+
+      <!-- FOLLOW / CHURN stats -->
+      <div class="grid-3" x-show="isFollowMode()">
+        <div class="stat">
+          <div class="label">Pending to follow</div>
+          <div class="value" x-text="followTotals.pending || 0"></div>
+          <div class="small" x-text="(followTotals.candidates || 0) + ' in pool total'"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Followed this session</div>
+          <div class="value success" x-text="state.followed_count || 0"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Followed total</div>
+          <div class="value success" x-text="followTotals.followed || 0"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Follow failed</div>
+          <div class="value danger" x-text="(state.follow_failed_count || 0) + (followTotals.follow_failed - (state.follow_failed_count || 0) > 0 ? ' (' + followTotals.follow_failed + ' total)' : '')"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Skipped (private/filtered)</div>
+          <div class="value" x-text="followTotals.follow_skipped || 0"></div>
+        </div>
+        <div class="stat" x-show="config && config.mode === 'churn'">
+          <div class="label">Churn-unfollowed</div>
+          <div class="value" x-text="followTotals.churn_unfollowed || 0"></div>
+        </div>
+        <div class="stat">
+          <div class="label">Daily cap</div>
+          <div class="value" x-text="state.daily_cap || '—'"></div>
+        </div>
+      </div>
+      <template x-if="state.error">
+        <div style="margin-top: 12px; padding: 10px; background: rgba(248,113,113,0.1); border: 1px solid var(--danger); border-radius: 6px; color: var(--danger);">
+          <strong>Error:</strong> <span x-text="state.error"></span>
+        </div>
+      </template>
+      <template x-if="state.last_message">
+        <div class="small" style="margin-top: 12px;">last: <span x-text="state.last_message"></span></div>
+      </template>
+    </div>
+
+    <div class="tabs">
+      <template x-if="!isFollowMode()">
+        <span style="display: contents;">
+          <button class="tab" :class="{ active: tab === 'following' }" @click="tab = 'following'">Following</button>
+          <button class="tab" :class="{ active: tab === 'unfollowed' }" @click="tab = 'unfollowed'">Unfollowed</button>
+          <button class="tab" :class="{ active: tab === 'skipped' }" @click="tab = 'skipped'">Skipped</button>
+          <button class="tab" :class="{ active: tab === 'failed' }" @click="tab = 'failed'">Failed</button>
+        </span>
+      </template>
+      <template x-if="isFollowMode()">
+        <span style="display: contents;">
+          <button class="tab" :class="{ active: tab === 'sources' }" @click="tab = 'sources'">Sources</button>
+          <button class="tab" :class="{ active: tab === 'candidates' }" @click="tab = 'candidates'">Candidates</button>
+          <button class="tab" :class="{ active: tab === 'followed' }" @click="tab = 'followed'">Followed</button>
+          <button class="tab" :class="{ active: tab === 'follow_skipped' }" @click="tab = 'follow_skipped'">Skipped</button>
+          <button class="tab" :class="{ active: tab === 'follow_failed' }" @click="tab = 'follow_failed'">Follow failed</button>
+          <button class="tab" x-show="config && config.mode === 'churn'" :class="{ active: tab === 'churn' }" @click="tab = 'churn'">Churn</button>
+        </span>
+      </template>
+      <button class="tab" :class="{ active: tab === 'config' }" @click="tab = 'config'">Config</button>
+      <button class="tab" :class="{ active: tab === 'whitelist' }" @click="tab = 'whitelist'">Whitelist</button>
+      <button class="tab" :class="{ active: tab === 'credentials' }" @click="tab = 'credentials'">Credentials</button>
+    </div>
+
+    <!-- FOLLOWING TAB -->
+    <div x-show="tab === 'following'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="filter-row">
+        <input type="text" placeholder="Filter usernames..." x-model="filter" />
+        <select x-model="statusFilter">
+          <option value="">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="current">Current</option>
+          <option value="unfollowed">Unfollowed</option>
+          <option value="skipped">Skipped</option>
+          <option value="failed">Failed</option>
+          <option value="whitelisted">Whitelisted</option>
+        </select>
+        <span class="small" x-text="filteredFollowing().length + ' shown'"></span>
+      </div>
+      <div class="small" style="margin-bottom: 8px;">Sorted oldest-followed first. The bot processes top-to-bottom.</div>
+      <div class="list-scroll">
+        <template x-if="following.length === 0">
+          <div class="empty">No following list cached yet. Start the bot to scrape it.</div>
+        </template>
+        <div class="list">
+          <template x-for="row in filteredFollowing().slice(0, 1500)" :key="row.username">
+            <div class="list-row following-row" :class="{ current: row.status === 'current' }">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span></a>
+              <span class="badge" :class="row.status" x-text="row.status"></span>
+              <span></span>
+              <button class="ghost small" style="padding:4px 8px;"
+                      @click="exclude(row)"
+                      x-show="row.status === 'pending' || row.status === 'current'"
+                      title="Never unfollow this account (add to whitelist)">Exclude</button>
+            </div>
+          </template>
+        </div>
+        <template x-if="filteredFollowing().length > 1500">
+          <div class="small" style="padding: 12px; text-align: center;">Showing first 1500 — refine filter to see more.</div>
+        </template>
+      </div>
+    </div>
+
+    <!-- UNFOLLOWED TAB -->
+    <div x-show="tab === 'unfollowed'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">From <code>data/unfollowed.log</code>. Newest first.</div>
+      <div class="list-scroll">
+        <template x-if="unfollowed.length === 0">
+          <div class="empty">No unfollows logged yet.</div>
+        </template>
+        <div class="list">
+          <template x-for="(row, i) in unfollowed.slice().reverse()" :key="row.timestamp + row.username + i">
+            <div class="list-row">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span><template x-if="row.note"><span class="small" style="margin-left: 8px;" x-text="'(' + row.note + ')'"></span></template></a>
+              <span class="timestamp" x-text="row.timestamp"></span>
+              <span></span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- SKIPPED TAB -->
+    <div x-show="tab === 'skipped'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">Deleted/unavailable accounts &amp; ones you already don't follow. From <code>data/skipped.log</code>. Not retried. Newest first.</div>
+      <div class="list-scroll">
+        <template x-if="skipped.length === 0">
+          <div class="empty">Nothing skipped yet.</div>
+        </template>
+        <div class="list">
+          <template x-for="(row, i) in skipped.slice().reverse()" :key="row.timestamp + row.username + i">
+            <div class="list-row removable">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span></a>
+              <span class="badge skipped" x-text="row.reason"></span>
+              <span class="timestamp" x-text="row.timestamp"></span>
+              <button class="ghost small row-remove" @click="removeFromLog('skipped', row.username)" title="Remove from skipped — the bot may revisit this account">Remove</button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- FAILED TAB -->
+    <div x-show="tab === 'failed'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">From <code>data/failed.log</code>. Newest first.</div>
+      <div class="list-scroll">
+        <template x-if="failed.length === 0">
+          <div class="empty">No failures logged.</div>
+        </template>
+        <div class="list">
+          <template x-for="(row, i) in failed.slice().reverse()" :key="row.timestamp + row.username + i">
+            <div class="list-row removable">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span></a>
+              <span class="badge failed" x-text="row.reason"></span>
+              <span class="timestamp" x-text="row.timestamp"></span>
+              <button class="ghost small row-remove" @click="removeFromLog('failed', row.username)" title="Remove from failed log">Remove</button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- SOURCES TAB -->
+    <div x-show="tab === 'sources'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 12px;">
+        Where to scrape strangers from. The bot visits each source, collects usernames, and adds the new ones (not already followed/skipped) to the candidate pool — automatically when the pool runs low during a run, or on demand with <strong>Scrape now</strong>.
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Follower profiles <span class="small" style="text-transform:none;">(scrape their followers)</span></label>
+          <textarea x-model="sourcesProfilesText" placeholder="competitor1&#10;competitor2" style="min-height: 140px;"></textarea>
+          <div class="small">One username per line. <code>@</code> optional. Private accounts can't be scraped.</div>
+        </div>
+        <div>
+          <label>Post URLs <span class="small" style="text-transform:none;">(scrape their likers)</span></label>
+          <textarea x-model="sourcesPostsText" placeholder="https://www.instagram.com/p/XXXXXXX/&#10;https://www.instagram.com/p/YYYYYYY/" style="min-height: 140px;"></textarea>
+          <div class="small">One post URL per line. Likers are hidden on some posts (esp. video/reels) — those return nothing.</div>
+        </div>
+      </div>
+      <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <button class="primary" @click="saveSources()">Save sources</button>
+        <button @click="loadSources()">Reload</button>
+        <button class="ghost" @click="scrapeNow()" :disabled="isRunning"
+                title="Scrape all sources into the candidate pool now">Scrape now</button>
+        <span class="small" x-show="isRunning" style="color: var(--warning);">stop the bot first to scrape on demand</span>
+        <span class="small" x-text="'caps: ' + ((config && config.follow) ? config.follow.scrape_per_source_cap + '/source, pool target ' + config.follow.candidate_pool_min : '')"></span>
+      </div>
+    </div>
+
+    <!-- CANDIDATES TAB -->
+    <div x-show="tab === 'candidates'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">
+        The pool the bot follows from (<code>data/follow_candidates.json</code>). Fill it automatically from the <a href="#" @click.prevent="tab='sources'">Sources</a> tab, or paste usernames here manually — one per line, <code>@</code> optional, <code>#</code> = comment. Already-followed / skipped / current-following accounts are filtered out at run time.
+      </div>
+      <div class="filter-row">
+        <span class="small" x-text="candidatesCount + ' in pool · ' + (followTotals.pending || 0) + ' still pending'"></span>
+      </div>
+      <textarea x-model="candidatesText" placeholder="someuser1&#10;someuser2&#10;someuser3"></textarea>
+      <div style="margin-top: 12px; display: flex; gap: 8px;">
+        <button class="primary" @click="saveCandidates()">Save pool</button>
+        <button @click="loadCandidates()">Reload from disk</button>
+      </div>
+    </div>
+
+    <!-- FOLLOWED TAB -->
+    <div x-show="tab === 'followed'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">From <code>data/followed.log</code>. Newest first.</div>
+      <div class="list-scroll">
+        <template x-if="followed.length === 0">
+          <div class="empty">No follows logged yet.</div>
+        </template>
+        <div class="list">
+          <template x-for="(row, i) in followed.slice().reverse()" :key="row.timestamp + row.username + i">
+            <div class="list-row">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span><template x-if="row.source"><span class="small" style="margin-left: 8px;" x-text="'(' + row.source + ')'"></span></template></a>
+              <span class="timestamp" x-text="row.timestamp"></span>
+              <span></span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- FOLLOW SKIPPED TAB -->
+    <div x-show="tab === 'follow_skipped'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">Accounts skipped while following (private / no posts / filtered / already following). From <code>data/follow_skipped.log</code>. Newest first.</div>
+      <div class="list-scroll">
+        <template x-if="followSkipped.length === 0">
+          <div class="empty">Nothing skipped yet.</div>
+        </template>
+        <div class="list">
+          <template x-for="(row, i) in followSkipped.slice().reverse()" :key="row.timestamp + row.username + i">
+            <div class="list-row removable">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span></a>
+              <span class="badge skipped" x-text="row.reason"></span>
+              <span class="timestamp" x-text="row.timestamp"></span>
+              <button class="ghost small row-remove" @click="removeFromLog('follow_skipped', row.username)" title="Remove so this account can be re-attempted on the next run">Remove</button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- FOLLOW FAILED TAB -->
+    <div x-show="tab === 'follow_failed'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">Transient follow failures (retried on later runs). From <code>data/follow_failed.log</code>. Newest first.</div>
+      <div class="list-scroll">
+        <template x-if="followFailed.length === 0">
+          <div class="empty">No follow failures logged.</div>
+        </template>
+        <div class="list">
+          <template x-for="(row, i) in followFailed.slice().reverse()" :key="row.timestamp + row.username + i">
+            <div class="list-row removable">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span></a>
+              <span class="badge failed" x-text="row.reason"></span>
+              <span class="timestamp" x-text="row.timestamp"></span>
+              <button class="ghost small row-remove" @click="removeFromLog('follow_failed', row.username)" title="Remove from follow-failed log">Remove</button>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHURN TAB -->
+    <div x-show="tab === 'churn'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">
+        Outcome of the churn review (follows older than <strong x-text="(config && config.follow && config.follow.churn) ? config.follow.churn.unfollow_after_days : '?'"></strong> days). Kept = followed you back; Churned = didn't, so unfollowed.
+      </div>
+      <div class="card-title" style="margin-top: 4px;">Kept (followed you back) · <span x-text="followKept.length"></span></div>
+      <div class="list-scroll" style="max-height: 30vh; margin-bottom: 16px;">
+        <template x-if="followKept.length === 0">
+          <div class="empty">Nobody kept yet.</div>
+        </template>
+        <div class="list">
+          <template x-for="(row, i) in followKept.slice().reverse()" :key="row.timestamp + row.username + i">
+            <div class="list-row">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span></a>
+              <span class="badge followed">kept</span>
+              <span class="timestamp" x-text="row.timestamp"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+      <div class="card-title">Churned (didn't follow back) · <span x-text="churnUnfollowed.length"></span></div>
+      <div class="list-scroll" style="max-height: 30vh;">
+        <template x-if="churnUnfollowed.length === 0">
+          <div class="empty">Nothing churned yet.</div>
+        </template>
+        <div class="list">
+          <template x-for="(row, i) in churnUnfollowed.slice().reverse()" :key="row.timestamp + row.username + i">
+            <div class="list-row">
+              <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener">@<span x-text="row.username"></span></a>
+              <span class="badge skipped">churned</span>
+              <span class="timestamp" x-text="row.timestamp"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONFIG TAB -->
+    <div x-show="tab === 'config'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <template x-if="config">
+        <div>
+          <div class="card-title">Pacing</div>
+          <div class="form-grid">
+            <div><label>Daily cap</label><input type="number" x-model.number="config.pacing.daily_cap" /></div>
+            <div><label>Long break every N</label><input type="number" x-model.number="config.pacing.long_break_every_n" /></div>
+            <div><label>Min delay (s)</label><input type="number" x-model.number="config.pacing.min_delay_seconds" /></div>
+            <div><label>Max delay (s)</label><input type="number" x-model.number="config.pacing.max_delay_seconds" /></div>
+            <div><label>Long break min (s)</label><input type="number" x-model.number="config.pacing.long_break_min_seconds" /></div>
+            <div><label>Long break max (s)</label><input type="number" x-model.number="config.pacing.long_break_max_seconds" /></div>
+            <div><label>Distraction chance</label><input type="number" step="0.01" x-model.number="config.pacing.distraction_chance" /></div>
+            <div><label>Distraction min (s)</label><input type="number" x-model.number="config.pacing.distraction_min_seconds" /></div>
+            <div><label>Distraction max (s)</label><input type="number" x-model.number="config.pacing.distraction_max_seconds" /></div>
+          </div>
+
+          <div class="card-title" style="margin-top: 20px;">Browser</div>
+          <div class="form-grid">
+            <div>
+              <label>Headless</label>
+              <select x-model="config.browser.headless">
+                <option :value="false">No (visible window)</option>
+                <option :value="true">Yes (no window)</option>
+              </select>
+            </div>
+            <div><label>Locale</label><input type="text" x-model="config.browser.locale" /></div>
+            <div><label>Viewport width</label><input type="number" x-model.number="config.browser.viewport_width" /></div>
+            <div><label>Viewport height</label><input type="number" x-model.number="config.browser.viewport_height" /></div>
+            <div style="grid-column: 1 / -1;"><label>User agent</label><input type="text" x-model="config.browser.user_agent" /></div>
+          </div>
+
+          <div class="card-title" style="margin-top: 20px;">Behavior</div>
+          <div class="form-grid">
+            <div>
+              <label>Use cached following</label>
+              <select x-model="config.behavior.use_following_cache">
+                <option :value="true">Yes</option>
+                <option :value="false">No (re-scrape every run)</option>
+              </select>
+            </div>
+            <div><label>Warmup browse (s)</label><input type="number" x-model.number="config.behavior.warmup_browse_seconds" /></div>
+          </div>
+
+          <template x-if="config.follow">
+            <div>
+              <div class="card-title" style="margin-top: 20px;">Follow / growth <span class="small" style="text-transform:none;letter-spacing:normal;">(used in follow &amp; churn modes)</span></div>
+              <div class="form-grid">
+                <div><label>Daily cap (new follows)</label><input type="number" x-model.number="config.follow.daily_cap" /></div>
+                <div><label>Candidate pool min</label><input type="number" x-model.number="config.follow.candidate_pool_min" /></div>
+                <div><label>Min delay (s)</label><input type="number" x-model.number="config.follow.min_delay_seconds" /></div>
+                <div><label>Max delay (s)</label><input type="number" x-model.number="config.follow.max_delay_seconds" /></div>
+              </div>
+
+              <div class="card-title" style="margin-top: 20px;">Follow filters</div>
+              <div class="form-grid">
+                <div>
+                  <label>Skip accounts that already follow you</label>
+                  <select x-model="config.follow.filters.skip_already_follows_me">
+                    <option :value="true">Yes</option>
+                    <option :value="false">No</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Skip private accounts</label>
+                  <select x-model="config.follow.filters.skip_private">
+                    <option :value="true">Yes</option>
+                    <option :value="false">No</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Skip accounts with no posts</label>
+                  <select x-model="config.follow.filters.skip_no_posts">
+                    <option :value="true">Yes</option>
+                    <option :value="false">No</option>
+                  </select>
+                </div>
+                <div><label>Min followers (0 = ignore)</label><input type="number" x-model.number="config.follow.filters.min_followers" /></div>
+                <div><label>Max followers (0 = ignore)</label><input type="number" x-model.number="config.follow.filters.max_followers" /></div>
+                <div><label>Max following (0 = ignore)</label><input type="number" x-model.number="config.follow.filters.max_following" /></div>
+              </div>
+
+              <template x-if="config.follow.churn">
+                <div>
+                  <div class="card-title" style="margin-top: 20px;">Churn <span class="small" style="text-transform:none;letter-spacing:normal;">(churn mode — stage 3)</span></div>
+                  <div class="form-grid">
+                    <div><label>Unfollow after (days)</label><input type="number" x-model.number="config.follow.churn.unfollow_after_days" /></div>
+                    <div>
+                      <label>Keep followers-back</label>
+                      <select x-model="config.follow.churn.keep_followers_back">
+                        <option :value="true">Yes</option>
+                        <option :value="false">No</option>
+                      </select>
+                    </div>
+                    <div><label>Daily unfollow cap</label><input type="number" x-model.number="config.follow.churn.daily_unfollow_cap" /></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <div style="margin-top: 20px; display: flex; gap: 8px;">
+            <button class="primary" @click="saveConfig()">Save config</button>
+            <button @click="loadConfig()">Reload from disk</button>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- WHITELIST TAB -->
+    <div x-show="tab === 'whitelist'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 8px;">Excepted accounts — never unfollowed. Search below, or bulk-edit the raw text.</div>
+
+      <div class="filter-row">
+        <input type="text" placeholder="Search whitelist..." x-model="whitelistFilter" />
+        <span class="small" x-text="whitelistEntries().length + ' / ' + whitelistAll().length + ' shown'"></span>
+      </div>
+      <div class="list-scroll" style="max-height: 36vh; margin-bottom: 16px;">
+        <template x-if="whitelistAll().length === 0">
+          <div class="empty">Whitelist is empty.</div>
+        </template>
+        <template x-if="whitelistAll().length > 0 && whitelistEntries().length === 0">
+          <div class="empty">No matches.</div>
+        </template>
+        <div class="list">
+          <template x-for="name in whitelistEntries()" :key="name">
+            <div class="list-row" style="grid-template-columns: 1fr 90px;">
+              <div class="username">@<span x-text="name"></span></div>
+              <button class="ghost small" style="padding:4px 8px;" @click="removeFromWhitelist(name)">Remove</button>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <label>Raw whitelist (one username per line; <code>@</code> optional; <code>#</code> = comment)</label>
+      <textarea x-model="whitelistText"></textarea>
+      <div style="margin-top: 12px; display: flex; gap: 8px;">
+        <button class="primary" @click="saveWhitelist()">Save whitelist</button>
+        <button @click="loadWhitelist()">Reload from disk</button>
+      </div>
+    </div>
+
+    <!-- CREDENTIALS TAB -->
+    <div x-show="tab === 'credentials'" class="card" style="margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;">
+      <div class="small" style="margin-bottom: 12px;">Stored in <code>.env</code> on the server. Used to log in to Instagram. The session cookie is cached after first login, so 2FA is only needed occasionally.</div>
+      <div class="form-grid">
+        <div><label>Instagram username</label><input type="text" x-model="credUsername" autocomplete="off" /></div>
+        <div><label>Instagram password</label><input type="password" x-model="credPassword" autocomplete="new-password" /></div>
+      </div>
+      <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center;">
+        <button class="primary" @click="saveCredentials()">Save credentials</button>
+        <span class="small" x-show="credentialsStatus" x-text="credentialsStatus"></span>
+      </div>
+    </div>
+
+  </div>
+
+  <template x-if="toast">
+    <div class="toast" :class="toast.kind" x-text="toast.msg"></div>
+  </template>
+
+  <script>
+    function app() {
+      return {
+        ws: null,
+        state: { status: 'idle', phase_detail: '', current_target: null, unfollowed_count: 0, failed_count: 0, total_targets: 0, progress_index: 0, last_message: '', error: null, next_action_at: null, daily_cap: 0, followed_count: 0, follow_failed_count: 0, candidate_pool: 0, churn_unfollowed_count: 0 },
+        isRunning: false,
+        following: [],
+        unfollowed: [],
+        failed: [],
+        skipped: [],
+        totals: { following: 0, unfollowed: 0, failed: 0, skipped: 0, whitelisted: 0 },
+        // follow / growth
+        followed: [],
+        followSkipped: [],
+        followFailed: [],
+        followKept: [],
+        churnUnfollowed: [],
+        followTotals: { candidates: 0, pending: 0, followed: 0, follow_skipped: 0, follow_failed: 0, churn_unfollowed: 0, follow_kept: 0 },
+        candidatesText: '',
+        candidatesCount: 0,
+        sourcesProfilesText: '',
+        sourcesPostsText: '',
+        config: null,
+        whitelistText: '',
+        whitelistFilter: '',
+        credUsername: '',
+        credPassword: '',
+        credentialsStatus: '',
+        tab: 'following',
+        filter: '',
+        statusFilter: '',
+        toast: null,
+        _toastTimer: null,
+        _tick: 0,
+
+        async init() {
+          this.connectWS();
+          await Promise.all([
+            this.refreshState(),
+            this.refreshLists(),
+            this.refreshFollowLists(),
+            this.loadCandidates(),
+            this.loadSources(),
+            this.loadConfig(),
+            this.loadWhitelist(),
+            this.loadCredentials(),
+          ]);
+          // Land on a relevant tab for the active mode (default 'following' is
+          // hidden in follow/churn mode).
+          if (this.isFollowMode()) this.tab = 'candidates';
+          setInterval(() => { this._tick++; }, 1000); // re-render countdown
+        },
+
+        connectWS() {
+          const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+          this.ws = new WebSocket(`${proto}://${location.host}/ws`);
+          this.ws.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'state') {
+              const prevStatus = this.state.status;
+              this.state = msg.data;
+              // A scrape just finished (status left 'scraping') — the pool changed.
+              if (prevStatus === 'scraping' && this.state.status !== 'scraping') {
+                this.refreshFollowLists();
+                this.loadCandidates();
+              }
+            } else if (msg.type === 'unfollowed') {
+              this.unfollowed.push(msg.data);
+              this.totals.unfollowed = this.unfollowed.length;
+              // update the following row status
+              const u = msg.data.username.toLowerCase();
+              const row = this.following.find(r => r.username.toLowerCase() === u);
+              if (row) row.status = 'unfollowed';
+            } else if (msg.type === 'failed') {
+              this.failed.push(msg.data);
+              this.totals.failed = this.failed.length;
+              const u = msg.data.username.toLowerCase();
+              const row = this.following.find(r => r.username.toLowerCase() === u);
+              if (row) row.status = 'failed';
+            } else if (msg.type === 'skipped') {
+              this.skipped.push(msg.data);
+              this.totals.skipped = this.skipped.length;
+              const u = msg.data.username.toLowerCase();
+              const row = this.following.find(r => r.username.toLowerCase() === u);
+              if (row) row.status = 'skipped';
+            } else if (msg.type === 'followed') {
+              this.followed.push(msg.data);
+              this.followTotals.followed = (this.followTotals.followed || 0) + 1;
+              if (this.followTotals.pending > 0) this.followTotals.pending--;
+            } else if (msg.type === 'follow_skipped') {
+              this.followSkipped.push(msg.data);
+              this.followTotals.follow_skipped = (this.followTotals.follow_skipped || 0) + 1;
+            } else if (msg.type === 'follow_failed') {
+              this.followFailed.push(msg.data);
+              this.followTotals.follow_failed = (this.followTotals.follow_failed || 0) + 1;
+            } else if (msg.type === 'follow_kept') {
+              this.followKept.push(msg.data);
+              this.followTotals.follow_kept = (this.followTotals.follow_kept || 0) + 1;
+            } else if (msg.type === 'churn_unfollowed') {
+              this.churnUnfollowed.push(msg.data);
+              this.followTotals.churn_unfollowed = (this.followTotals.churn_unfollowed || 0) + 1;
+            } else if (msg.type === 'following_cached') {
+              this.refreshLists();
+            }
+          };
+          this.ws.onclose = () => {
+            setTimeout(() => this.connectWS(), 2000);
+          };
+        },
+
+        async fetch(url, opts) {
+          const r = await fetch(url, opts);
+          if (!r.ok) {
+            const txt = await r.text();
+            throw new Error(txt || r.statusText);
+          }
+          return r.json();
+        },
+
+        async refreshState() {
+          try {
+            const j = await this.fetch('/api/state');
+            this.state = j.state;
+            this.isRunning = j.is_running;
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async refreshLists() {
+          try {
+            const j = await this.fetch('/api/lists');
+            this.following = j.following;
+            this.unfollowed = j.unfollowed;
+            this.failed = j.failed;
+            this.skipped = j.skipped || [];
+            this.totals = j.totals;
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async refreshFollowLists() {
+          try {
+            const j = await this.fetch('/api/follow-lists');
+            this.followed = j.followed;
+            this.followSkipped = j.follow_skipped;
+            this.followFailed = j.follow_failed;
+            this.followKept = j.follow_kept || [];
+            this.churnUnfollowed = j.churn_unfollowed || [];
+            this.followTotals = j.totals;
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async loadCandidates() {
+          try {
+            const j = await this.fetch('/api/candidates');
+            this.candidatesText = j.text;
+            this.candidatesCount = j.count;
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async saveCandidates() {
+          try {
+            const j = await this.fetch('/api/candidates', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: this.candidatesText }),
+            });
+            this.candidatesCount = j.count;
+            this.showToast('Candidate pool saved (' + j.count + ')', 'success');
+            this.refreshFollowLists();
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async loadSources() {
+          try {
+            const j = await this.fetch('/api/sources');
+            this.sourcesProfilesText = (j.follower_profiles || []).join('\n');
+            this.sourcesPostsText = (j.liker_posts || []).join('\n');
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async saveSources() {
+          try {
+            const fp = this.sourcesProfilesText.split('\n').map(s => s.trim()).filter(Boolean);
+            const lp = this.sourcesPostsText.split('\n').map(s => s.trim()).filter(Boolean);
+            const j = await this.fetch('/api/sources', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ follower_profiles: fp, liker_posts: lp }),
+            });
+            this.sourcesProfilesText = (j.follower_profiles || []).join('\n');
+            this.sourcesPostsText = (j.liker_posts || []).join('\n');
+            // Keep in-memory config in sync so a later Config save won't revert sources.
+            if (this.config && this.config.follow) {
+              this.config.follow.sources = this.config.follow.sources || {};
+              this.config.follow.sources.follower_profiles = j.follower_profiles;
+              this.config.follow.sources.liker_posts = j.liker_posts;
+            }
+            this.showToast('Sources saved', 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async scrapeNow() {
+          try {
+            await this.fetch('/api/scrape', { method: 'POST' });
+            this.showToast('Scraping started — watch the status bar', 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        isFollowMode() {
+          return this.config && (this.config.mode === 'follow' || this.config.mode === 'churn');
+        },
+
+        async changeMode() {
+          // Persist the mode immediately and move the user to a relevant tab so
+          // they aren't left on a now-hidden list tab.
+          await this.saveConfig();
+          const unfollowTabs = ['following', 'unfollowed', 'skipped', 'failed'];
+          const followTabs = ['candidates', 'followed', 'follow_skipped', 'follow_failed'];
+          if (this.isFollowMode() && unfollowTabs.includes(this.tab)) this.tab = 'candidates';
+          if (!this.isFollowMode() && followTabs.includes(this.tab)) this.tab = 'following';
+        },
+
+        async loadConfig() {
+          try { this.config = await this.fetch('/api/config'); }
+          catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        // <select> options bound with :value="true/false" can hand back the
+        // STRINGS "true"/"false" (and "false" is truthy in Python), so normalize
+        // those to real booleans before saving. None of this config's legit
+        // string fields are literally "true"/"false", so this is safe.
+        _coerceBools(v) {
+          if (Array.isArray(v)) return v.map(x => this._coerceBools(x));
+          if (v && typeof v === 'object') {
+            const out = {};
+            for (const k in v) out[k] = this._coerceBools(v[k]);
+            return out;
+          }
+          if (v === 'true') return true;
+          if (v === 'false') return false;
+          return v;
+        },
+
+        async saveConfig() {
+          try {
+            await this.fetch('/api/config', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ data: this._coerceBools(this.config) }),
+            });
+            this.showToast('Config saved', 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async removeFromLog(logName, username) {
+          try {
+            const j = await this.fetch('/api/log/remove', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ log: logName, username }),
+            });
+            const u = username.toLowerCase();
+            const arrName = { skipped: 'skipped', failed: 'failed',
+              follow_skipped: 'followSkipped', follow_failed: 'followFailed',
+              followed: 'followed' }[logName];
+            if (arrName) this[arrName] = this[arrName].filter(r => r.username.toLowerCase() !== u);
+            // Refresh totals + pending (un-skipping makes the account eligible again).
+            this.refreshLists();
+            this.refreshFollowLists();
+            this.showToast('Removed @' + username, 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async loadWhitelist() {
+          try {
+            const j = await this.fetch('/api/whitelist');
+            this.whitelistText = j.text;
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async saveWhitelist() {
+          try {
+            await this.fetch('/api/whitelist', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: this.whitelistText }),
+            });
+            this.showToast('Whitelist saved', 'success');
+            this.refreshLists();
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async loadCredentials() {
+          try {
+            const j = await this.fetch('/api/credentials');
+            this.credUsername = j.username || '';
+            this.credentialsStatus = j.has_username && j.has_password ? 'credentials set' : 'not configured';
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async saveCredentials() {
+          if (!this.credUsername || !this.credPassword) {
+            this.showToast('Username and password required', 'error');
+            return;
+          }
+          try {
+            await this.fetch('/api/credentials', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username: this.credUsername, password: this.credPassword }),
+            });
+            this.credPassword = '';
+            this.credentialsStatus = 'credentials set';
+            this.showToast('Credentials saved', 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async start() {
+          try { await this.fetch('/api/start', { method: 'POST' }); this.isRunning = true; }
+          catch (e) { this.showToast(e.message, 'error'); }
+        },
+        async stop()  { try { await this.fetch('/api/stop',  { method: 'POST' }); } catch (e) { this.showToast(e.message, 'error'); } },
+        async pause() { try { await this.fetch('/api/pause', { method: 'POST' }); } catch (e) { this.showToast(e.message, 'error'); } },
+        async resume(){ try { await this.fetch('/api/resume',{ method: 'POST' }); } catch (e) { this.showToast(e.message, 'error'); } },
+
+        async exclude(row) {
+          try {
+            await this.fetch('/api/whitelist/add', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username: row.username }),
+            });
+            row.status = 'whitelisted';
+            this.totals.whitelisted = (this.totals.whitelisted || 0) + 1;
+            this.loadWhitelist();
+            this.showToast('@' + row.username + ' excluded', 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async clearCache() {
+          if (!confirm('Delete the cached following list? The next run will re-scrape it.')) return;
+          try {
+            await this.fetch('/api/cache/clear', { method: 'POST' });
+            this.showToast('Cache cleared', 'success');
+            this.refreshLists();
+          } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        progressPercent() {
+          if (!this.state.total_targets) return 0;
+          return Math.min(100, Math.round((this.state.progress_index / this.state.total_targets) * 100));
+        },
+
+        nextActionSeconds() {
+          this._tick; // dependency for reactivity
+          if (!this.state.next_action_at) return 0;
+          const s = Math.max(0, Math.round(this.state.next_action_at - Date.now() / 1000));
+          return s;
+        },
+
+        whitelistAll() {
+          // parsed usernames from the raw text (skip blanks + # comments)
+          return this.whitelistText.split('\n')
+            .map(l => l.trim().replace(/^@/, '').toLowerCase())
+            .filter(l => l && !l.startsWith('#'));
+        },
+
+        whitelistEntries() {
+          const f = this.whitelistFilter.trim().toLowerCase();
+          const all = this.whitelistAll();
+          return f ? all.filter(u => u.includes(f)) : all;
+        },
+
+        async removeFromWhitelist(name) {
+          // drop the matching line(s) from the raw text, then persist
+          const keep = this.whitelistText.split('\n').filter(line => {
+            const t = line.trim().replace(/^@/, '').toLowerCase();
+            if (!t || t.startsWith('#')) return true; // keep blanks/comments
+            return t !== name.toLowerCase();
+          });
+          this.whitelistText = keep.join('\n');
+          await this.saveWhitelist();
+        },
+
+        filteredFollowing() {
+          const f = this.filter.trim().toLowerCase();
+          const sf = this.statusFilter;
+          return this.following.filter(r =>
+            (!f || r.username.toLowerCase().includes(f)) &&
+            (!sf || r.status === sf)
+          );
+        },
+
+        showToast(msg, kind = '') {
+          this.toast = { msg, kind };
+          if (this._toastTimer) clearTimeout(this._toastTimer);
+          this._toastTimer = setTimeout(() => { this.toast = null; }, 3500);
+        },
+      };
+    }
+  </script>
+</body>
+</html>

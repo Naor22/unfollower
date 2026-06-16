@@ -1,0 +1,37 @@
+# --- secrets & live session (NEVER commit) ---
+.env
+**/session.json
+
+# --- runtime data: logs, caches, scraped lists, chrome profile ---
+# Gitignored so `git reset --hard` on the Pi never touches them.
+data/
+data_pc/
+
+# --- Pi keeps its own tuned config / whitelist; edited live via the dashboard.
+#     Tracking these would let a `git reset --hard` deploy clobber them. ---
+config.yaml
+whitelist.txt
+
+# --- editor / tooling local state ---
+.claude/
+
+# --- personal / large / build artifacts ---
+following.json
+*.zip
+*.log
+
+# --- debug captures the bot writes on failures ---
+*_no_form_*.html
+screenshots/
+*.png
+
+# --- python / envs ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.playwright/
+
+# --- stray scp artifact (scp without a trailing colon created this) ---
+/naor223@192.168.8.181/
