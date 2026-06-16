@@ -60,7 +60,7 @@
       font-size: 14px; line-height: 1.55;
       -webkit-font-smoothing: antialiased;
       /* Stop iOS Safari from auto-inflating text in tall blocks (the live-activity
-         feed) — inflation enlarged rows and broke flex ellipsis truncation. */
+         feed) - inflation enlarged rows and broke flex ellipsis truncation. */
       -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
     }
     ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -250,7 +250,7 @@
     /* overview two-col */
     .overview-cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; align-items: start; }
     /* Grid items default to min-width:auto, so a long no-wrap feed row would force
-       the track (and the card) wider than the screen — clipped by overflow-x:hidden,
+       the track (and the card) wider than the screen - clipped by overflow-x:hidden,
        showing only half the component. min-width:0 lets the track shrink so the rows
        truncate with an ellipsis instead. */
     .overview-cols > * { min-width: 0; }
@@ -581,9 +581,9 @@
                 <label>Mode</label>
                 <div style="display:flex;align-items:center;gap:10px;">
                   <select x-model="config.mode" @change="changeMode()" style="min-width:230px;">
-                    <option value="unfollow">Unfollow — clean up your following</option>
-                    <option value="follow">Follow — grow from candidate pool</option>
-                    <option value="churn">Marketing — follow then drop non-followers</option>
+                    <option value="unfollow">Unfollow - clean up your following</option>
+                    <option value="follow">Follow - grow from candidate pool</option>
+                    <option value="churn">Marketing - follow then drop non-followers</option>
                   </select>
                   <span class="field-hint" style="margin:0;" x-show="!isRunning">applies next start</span>
                   <span class="field-hint" style="margin:0;color:var(--warning);" x-show="isRunning">stop &amp; start to apply</span>
@@ -651,7 +651,7 @@
             </div>
             <div class="stat">
               <div class="label">Daily cap</div>
-              <div class="value" x-text="state.daily_cap || '—'"></div>
+              <div class="value" x-text="state.daily_cap || '-'"></div>
             </div>
           </div>
 
@@ -682,7 +682,7 @@
             </div>
             <div class="stat">
               <div class="label">Daily cap</div>
-              <div class="value" x-text="state.daily_cap || '—'"></div>
+              <div class="value" x-text="state.daily_cap || '-'"></div>
             </div>
           </div>
 
@@ -699,7 +699,7 @@
                 <div class="empty">
                   <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
                   <div class="t">No activity yet</div>
-                  <div>Every step the bot takes — logins, scrapes, follows, waits — streams here live.</div>
+                  <div>Every step the bot takes - logins, scrapes, follows, waits - streams here live.</div>
                 </div>
               </template>
               <div class="feed">
@@ -764,7 +764,7 @@
 
         <!-- ============ FOLLOWING ============ -->
         <div x-show="tab==='following'" x-transition.opacity>
-          <div class="page-head"><h1>Following</h1><p>Cached following list, oldest-followed first — the bot processes top-to-bottom.</p></div>
+          <div class="page-head"><h1>Following</h1><p>Cached following list, oldest-followed first - the bot processes top-to-bottom.</p></div>
           <div class="card">
             <div class="toolbar">
               <div class="search">
@@ -791,12 +791,12 @@
                   <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener"><span class="at">@</span><span x-text="row.username"></span></a>
                   <div class="grow"></div>
                   <span class="badge" :class="row.status" x-text="row.status"></span>
-                  <button class="ghost sm" @click="skip(row)" x-show="row.status === 'pending' || row.status === 'current'" title="Mark as skipped — the bot won't try to unfollow this account">Skip</button>
+                  <button class="ghost sm" @click="skip(row)" x-show="row.status === 'pending' || row.status === 'current'" title="Mark as skipped - the bot won't try to unfollow this account">Skip</button>
                   <button class="ghost sm" @click="exclude(row)" x-show="row.status === 'pending' || row.status === 'current'" title="Never unfollow this account (add to whitelist)">Exclude</button>
                 </div>
               </template>
               <template x-if="filteredFollowing().length > 1500">
-                <div class="field-hint" style="padding:12px;text-align:center;">Showing first 1500 — refine the filter to see more.</div>
+                <div class="field-hint" style="padding:12px;text-align:center;">Showing first 1500 - refine the filter to see more.</div>
               </template>
             </div>
           </div>
@@ -844,7 +844,7 @@
                     <span class="badge skipped" x-text="row.reason"></span>
                     <div class="grow"></div>
                     <span class="timestamp" x-text="row.timestamp"></span>
-                    <button class="ghost sm" @click="removeFromLog('skipped', row.username)" title="Remove from skipped — the bot may revisit this account">Remove</button>
+                    <button class="ghost sm" @click="removeFromLog('skipped', row.username)" title="Remove from skipped - the bot may revisit this account">Remove</button>
                   </div>
                   <div class="row-details" x-show="open" x-cloak>
                     <span><span class="k">time</span><span class="v" x-text="row.timestamp"></span></span>
@@ -887,7 +887,7 @@
 
         <!-- ============ SOURCES ============ -->
         <div x-show="tab==='sources'" x-transition.opacity>
-          <div class="page-head"><h1>Sources</h1><p>Where to scrape strangers from. The bot collects usernames from each source and tops up the candidate pool — automatically when it runs low, or on demand.</p></div>
+          <div class="page-head"><h1>Sources</h1><p>Where to scrape strangers from. The bot collects usernames from each source and tops up the candidate pool - automatically when it runs low, or on demand.</p></div>
           <div class="card">
             <div class="form-grid">
               <div>
@@ -898,7 +898,7 @@
               <div>
                 <label>Post URLs <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape their likers)</span></label>
                 <textarea x-model="sourcesPostsText" placeholder="https://www.instagram.com/p/XXXXXXX/" style="min-height:150px;"></textarea>
-                <div class="field-hint">One post URL per line. Likers are hidden on some posts (esp. video/reels) — those return nothing.</div>
+                <div class="field-hint">One post URL per line. Likers are hidden on some posts (esp. video/reels) - those return nothing.</div>
               </div>
               <div>
                 <label>Comment post URLs <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape their commenters)</span></label>
@@ -923,7 +923,7 @@
 
         <!-- ============ DISCOVERED SOURCES ============ -->
         <div x-show="tab==='discovered'" x-transition.opacity>
-          <div class="page-head"><h1>Discovered sources</h1><p>Niche influencer accounts the bot flagged from profiles it visited (bio matched your discovery keywords). Add the good ones as scrape sources — that's what makes targeting self-feeding.</p></div>
+          <div class="page-head"><h1>Discovered sources</h1><p>Niche influencer accounts the bot flagged from profiles it visited (bio matched your discovery keywords). Add the good ones as scrape sources - that's what makes targeting self-feeding.</p></div>
           <div class="card">
             <div class="toolbar">
               <span class="count-chip" x-text="discoveredSources.length + ' awaiting review'"></span>
@@ -949,7 +949,7 @@
         <!-- ============ SOURCE ANALYTICS ============ -->
         <div x-show="tab==='analytics'" x-transition.opacity>
           <div class="page-head" style="display:flex;align-items:flex-start;gap:12px;">
-            <div style="flex:1 1 auto;min-width:0;"><h1>Analytics</h1><p>Growth, action volumes, conversion, failures and runtime — your once-in-a-while health check. <span x-show="analytics && analytics.runtime">Observed over <strong x-text="analytics.runtime.observed_days"></strong> days.</span></p></div>
+            <div style="flex:1 1 auto;min-width:0;"><h1>Analytics</h1><p>Growth, action volumes, conversion, failures and runtime - your once-in-a-while health check. <span x-show="analytics && analytics.runtime">Observed over <strong x-text="analytics.runtime.observed_days"></strong> days.</span></p></div>
             <button class="ghost sm" @click="loadAnalytics()">Refresh</button>
           </div>
 
@@ -966,11 +966,11 @@
                   <div class="ms"><div class="v" x-text="fmtNum(state.account_followers)"></div><div class="l">Followers now</div></div>
                   <div class="ms"><div class="v" x-text="fmtNum(state.account_following)"></div><div class="l">Following now</div></div>
                   <div class="ms"><div class="v good" x-text="analytics.totals.followed"></div><div class="l">Followed (all-time)</div></div>
-                  <div class="ms"><div class="v" x-text="analytics.rates.follow_back_rate != null ? analytics.rates.follow_back_rate + '%' : '—'"></div><div class="l" x-text="'Follow-back (' + analytics.rates.followed_back + '/' + analytics.rates.measured + ')'"></div></div>
+                  <div class="ms"><div class="v" x-text="analytics.rates.follow_back_rate != null ? analytics.rates.follow_back_rate + '%' : '-'"></div><div class="l" x-text="'Follow-back (' + analytics.rates.followed_back + '/' + analytics.rates.measured + ')'"></div></div>
                   <div class="ms"><div class="v warn" x-text="analytics.totals.churned"></div><div class="l">Churned off</div></div>
                   <div class="ms"><div class="v" x-text="analytics.totals.likes"></div><div class="l">Reach likes</div></div>
                   <div class="ms"><div class="v" x-text="analytics.totals.checked"></div><div class="l">Vetted (kept)</div></div>
-                  <div class="ms"><div class="v bad" x-text="analytics.rates.reject_rate != null ? analytics.rates.reject_rate + '%' : '—'"></div><div class="l" x-text="'Rejected (' + analytics.totals.rejected + ')'"></div></div>
+                  <div class="ms"><div class="v bad" x-text="analytics.rates.reject_rate != null ? analytics.rates.reject_rate + '%' : '-'"></div><div class="l" x-text="'Rejected (' + analytics.totals.rejected + ')'"></div></div>
                 </div>
               </div>
 
@@ -978,7 +978,7 @@
               <div class="card">
                 <div class="card-title">Runtime &amp; reliability</div>
                 <div class="mini-stats">
-                  <div class="ms"><div class="v" :class="analytics.runtime.bot_uptime_pct >= 50 ? 'good' : ''" x-text="analytics.runtime.bot_uptime_pct != null ? analytics.runtime.bot_uptime_pct + '%' : '—'"></div><div class="l">Bot uptime</div></div>
+                  <div class="ms"><div class="v" :class="analytics.runtime.bot_uptime_pct >= 50 ? 'good' : ''" x-text="analytics.runtime.bot_uptime_pct != null ? analytics.runtime.bot_uptime_pct + '%' : '-'"></div><div class="l">Bot uptime</div></div>
                   <div class="ms"><div class="v" x-text="fmtDuration(analytics.runtime.avg_daily_bot_runtime)"></div><div class="l">Avg bot/day</div></div>
                   <div class="ms"><div class="v" x-text="fmtDuration(analytics.runtime.avg_daily_scraper_runtime)"></div><div class="l">Avg scraper/day</div></div>
                   <div class="ms"><div class="v" x-text="fmtDuration(analytics.runtime.bot_runtime_total)"></div><div class="l">Total bot runtime</div></div>
@@ -1153,25 +1153,25 @@
               <div class="stat-grid">
                 <div class="stat" :class="cpuTone()">
                   <div class="label">CPU</div>
-                  <div class="value" x-text="system.cpu_percent != null ? system.cpu_percent + '%' : '—'"></div>
+                  <div class="value" x-text="system.cpu_percent != null ? system.cpu_percent + '%' : '-'"></div>
                   <div class="sub" x-text="system.load ? ('load ' + system.load.join(' / ')) : ''"></div>
                   <svg class="spark" :class="cpuTone()" viewBox="0 0 100 38" preserveAspectRatio="none"><polyline :points="spark(cpuHist, 100)"></polyline></svg>
                 </div>
                 <div class="stat" :class="memTone()">
                   <div class="label">Memory</div>
-                  <div class="value" x-text="system.memory && system.memory.percent != null ? system.memory.percent + '%' : '—'"></div>
+                  <div class="value" x-text="system.memory && system.memory.percent != null ? system.memory.percent + '%' : '-'"></div>
                   <div class="sub" x-text="system.memory ? (system.memory.used_mb + ' / ' + system.memory.total_mb + ' MB') : ''"></div>
                   <svg class="spark" :class="memTone()" viewBox="0 0 100 38" preserveAspectRatio="none"><polyline :points="spark(memHist, 100)"></polyline></svg>
                 </div>
                 <div class="stat" :class="tempTone()">
                   <div class="label">Temperature</div>
-                  <div class="value" x-text="system.temp_c != null ? system.temp_c + '°C' : '—'"></div>
+                  <div class="value" x-text="system.temp_c != null ? system.temp_c + '°C' : '-'"></div>
                   <div class="sub">CPU thermal</div>
                   <svg class="spark" :class="tempTone()" viewBox="0 0 100 38" preserveAspectRatio="none"><polyline :points="spark(tempHist, 90)"></polyline></svg>
                 </div>
                 <div class="stat" :class="diskTone()">
                   <div class="label">Disk</div>
-                  <div class="value" x-text="system.disk && system.disk.percent != null ? system.disk.percent + '%' : '—'"></div>
+                  <div class="value" x-text="system.disk && system.disk.percent != null ? system.disk.percent + '%' : '-'"></div>
                   <div class="sub" x-text="system.disk ? (system.disk.used_gb + ' / ' + system.disk.total_gb + ' GB') : ''"></div>
                 </div>
                 <div class="stat">
@@ -1199,7 +1199,7 @@
                   <div><label>Min seconds between restarts</label><input type="number" x-model.number="watchdog.min_restart_interval_seconds" @change="saveWatchdog()" /></div>
                 </div>
                 <div class="field-hint" style="margin-top:10px;color:var(--warning);" x-show="!system.autostart">
-                  ⚠ Watchdog needs <code>server.autostart</code> on — otherwise a restart would leave the bot stopped. It also needs the passwordless-sudo line from DEPLOY.md.
+                  ⚠ Watchdog needs <code>server.autostart</code> on - otherwise a restart would leave the bot stopped. It also needs the passwordless-sudo line from DEPLOY.md.
                 </div>
               </div>
             </div>
@@ -1236,7 +1236,7 @@
               </div>
             </template>
             <template x-if="scraper && !scraper.present">
-              <p class="hint" style="color:var(--muted);">No scraper status yet — the <code>unfollower-scraper</code> service hasn't reported. See DEPLOY.md to set up the 2nd Chrome + burner account.</p>
+              <p class="hint" style="color:var(--muted);">No scraper status yet - the <code>unfollower-scraper</code> service hasn't reported. See DEPLOY.md to set up the 2nd Chrome + burner account.</p>
             </template>
           </div>
 
@@ -1249,9 +1249,9 @@
             <!-- Git deploy (works from anywhere, including the phone) -->
             <template x-if="deployGit && deployGit.is_repo">
               <div>
-                <p class="hint" style="margin-bottom:12px;">Pulls the newest commit from GitHub onto the Pi and restarts — no PC needed, so it works right here on your phone.</p>
+                <p class="hint" style="margin-bottom:12px;">Pulls the newest commit from GitHub onto the Pi and restarts - no PC needed, so it works right here on your phone.</p>
                 <div class="deploy-rows">
-                  <div class="deploy-line"><span class="k">Running</span><span class="v" x-text="deployGit.local ? (deployGit.local.hash + ' · ' + deployGit.local.subject) : '—'"></span></div>
+                  <div class="deploy-line"><span class="k">Running</span><span class="v" x-text="deployGit.local ? (deployGit.local.hash + ' · ' + deployGit.local.subject) : '-'"></span></div>
                   <template x-if="deployGit.fetch_ok && deployGit.behind > 0">
                     <div class="deploy-line up"><span class="k">Available</span><span class="v" x-text="(deployGit.remote ? deployGit.remote.hash + ' · ' + deployGit.remote.subject : '') + ' (' + deployGit.behind + ' new)'"></span></div>
                   </template>
@@ -1259,7 +1259,7 @@
                     <div class="deploy-line"><span class="k">Status</span><span class="v" style="color:var(--success);">up to date</span></div>
                   </template>
                   <template x-if="!deployGit.fetch_ok">
-                    <div class="deploy-line"><span class="k">Fetch</span><span class="v" style="color:var(--warning);" x-text="'could not reach GitHub — ' + (deployGit.fetch_error || 'check the Pi deploy key')"></span></div>
+                    <div class="deploy-line"><span class="k">Fetch</span><span class="v" style="color:var(--warning);" x-text="'could not reach GitHub - ' + (deployGit.fetch_error || 'check the Pi deploy key')"></span></div>
                   </template>
                 </div>
                 <button class="primary" style="margin-top:14px;" @click="deployPull()" :disabled="deployBusy || (deployGit.fetch_ok && !deployGit.behind)">
@@ -1270,7 +1270,7 @@
 
             <!-- Not a git repo yet: explain + keep manual upload available -->
             <template x-if="deployGit && !deployGit.is_repo">
-              <p class="hint" style="margin-bottom:6px;color:var(--warning);">Git deploy isn’t set up on the Pi yet — finish the one-time setup (init the repo + deploy key). Until then, use the file upload below.</p>
+              <p class="hint" style="margin-bottom:6px;color:var(--warning);">Git deploy isn’t set up on the Pi yet - finish the one-time setup (init the repo + deploy key). Until then, use the file upload below.</p>
             </template>
 
             <!-- Manual file upload (PC fallback), tucked away -->
@@ -1410,16 +1410,16 @@
                       <div class="form-grid">
                         <div><label>Reach source</label>
                           <select x-model="config.follow.engagement.reach_source">
-                            <option value="hashtags">Hashtags — like public posts under niche tags (recommended)</option>
-                            <option value="pool">Candidate pool — engage scraped accounts (mostly private)</option>
+                            <option value="hashtags">Hashtags - like public posts under niche tags (recommended)</option>
+                            <option value="pool">Candidate pool - engage scraped accounts (mostly private)</option>
                           </select>
                         </div>
                         <div><label>Reach daily cap</label><input type="number" x-model.number="config.follow.engagement.story_reach_daily_cap" /></div>
-                        <div><label>Like every — min actions</label><input type="number" x-model.number="config.follow.engagement.story_reach_every_min" /></div>
-                        <div><label>Like every — max actions</label><input type="number" x-model.number="config.follow.engagement.story_reach_every_max" /></div>
+                        <div><label>Like every - min actions</label><input type="number" x-model.number="config.follow.engagement.story_reach_every_min" /></div>
+                        <div><label>Like every - max actions</label><input type="number" x-model.number="config.follow.engagement.story_reach_every_max" /></div>
                         <div><label>Like N posts after follow (0 = off)</label><input type="number" x-model.number="config.follow.engagement.on_follow_like_posts" /></div>
                       </div>
-                      <div class="field-hint" style="margin-top:10px;">Reach fires after a random number of actions between min and max (so it's not 1 like per unfollow). Hashtag reach uses your <a href="#" @click.prevent="go('sources')">Sources → Hashtags</a> list — every hashtag post is public, so likes actually land.</div>
+                      <div class="field-hint" style="margin-top:10px;">Reach fires after a random number of actions between min and max (so it's not 1 like per unfollow). Hashtag reach uses your <a href="#" @click.prevent="go('sources')">Sources → Hashtags</a> list - every hashtag post is public, so likes actually land.</div>
                     </div>
                   </template>
 
@@ -1459,7 +1459,7 @@
                         <div><label>Filter delay min (s)</label><input type="number" x-model.number="config.scraper.min_delay" /></div>
                         <div><label>Filter delay max (s)</label><input type="number" x-model.number="config.scraper.max_delay" /></div>
                       </div>
-                      <p class="hint" style="margin-top:8px;">The scraper runs as a separate service on a 2nd Chrome (burner account) — see DEPLOY.md. <strong>Only scrape in bot's dead-time</strong> pauses the scraper while the bot is actively working (no Pi contention) and lets it build the pool when the bot is sleeping/done-for-day; it stops once the ready pool reaches <strong>high-water × daily cap</strong>. <strong>Use external scraper</strong> makes the core bot consume its cleaned pool; <strong>Keep running</strong> stops the bot halting on an empty pool. Watch live status under System → Scraper service.</p>
+                      <p class="hint" style="margin-top:8px;">The scraper runs as a separate service on a 2nd Chrome (burner account) - see DEPLOY.md. <strong>Only scrape in bot's dead-time</strong> pauses the scraper while the bot is actively working (no Pi contention) and lets it build the pool when the bot is sleeping/done-for-day; it stops once the ready pool reaches <strong>high-water × daily cap</strong>. <strong>Use external scraper</strong> makes the core bot consume its cleaned pool; <strong>Keep running</strong> stops the bot halting on an empty pool. Watch live status under System → Scraper service.</p>
                     </div>
                   </template>
                 </div>
@@ -1475,7 +1475,7 @@
 
         <!-- ============ WHITELIST ============ -->
         <div x-show="tab==='whitelist'" x-transition.opacity>
-          <div class="page-head"><h1>Whitelist</h1><p>Excepted accounts — never unfollowed. Search below, or bulk-edit the raw text.</p></div>
+          <div class="page-head"><h1>Whitelist</h1><p>Excepted accounts - never unfollowed. Search below, or bulk-edit the raw text.</p></div>
           <div class="card">
             <div class="toolbar">
               <div class="search">
@@ -1534,7 +1534,7 @@
   </template>
 
   <script>
-    // Tiny IndexedDB key/value store — used to remember the deploy folder handle
+    // Tiny IndexedDB key/value store - used to remember the deploy folder handle
     // (FileSystemDirectoryHandle) across reloads so the toggles work without
     // re-picking the folder. Handles can't go in localStorage (not serializable).
     function _idbDB() {
@@ -1581,7 +1581,7 @@
 
     // Maps a bot status -> a friendly one-liner shown when there's no finer phase detail.
     const STATUS_TEXT = {
-      idle: 'Idle — press Start to run', starting: 'Starting up…', logging_in: 'Logging in to Instagram…',
+      idle: 'Idle - press Start to run', starting: 'Starting up…', logging_in: 'Logging in to Instagram…',
       warmup: 'Warming up (browsing the feed)…', scraping: 'Scraping sources…', running: 'Running…',
       paused: 'Paused', stopping: 'Stopping…', sleeping: 'Sleeping until the next daily run',
       stopped: 'Stopped', error: 'Stopped on an error',
@@ -1594,7 +1594,7 @@
         sidebarOpen: false,
         state: { status: 'idle', phase_detail: '', current_target: null, unfollowed_count: 0, failed_count: 0, total_targets: 0, progress_index: 0, last_message: '', error: null, next_action_at: null, daily_cap: 0, followed_count: 0, follow_failed_count: 0, candidate_pool: 0, churn_unfollowed_count: 0, day_follows: 0, day_unfollows: 0, day_likes: 0 },
         // Derived live from the bot's status (which streams over the WebSocket), so
-        // Start/Pause/Resume/Stop re-enable the instant the bot changes state — no refresh.
+        // Start/Pause/Resume/Stop re-enable the instant the bot changes state - no refresh.
         get isRunning() { return !['idle', 'stopped', 'error', ''].includes(this.state.status); },
         _lastNarr: '',
         following: [],
@@ -1659,7 +1659,7 @@
           // Establish polling FIRST so a slow/failed initial load can't skip it.
           setInterval(() => { this._tick++; }, 1000); // re-render countdown
           // Keep the follow totals (incl. "Pending to follow") live even when the bot
-          // is OFF — the scraper fills the pool in a separate process (no WS event),
+          // is OFF - the scraper fills the pool in a separate process (no WS event),
           // so poll the follow lists on a timer while in follow/churn mode.
           setInterval(() => { if (this.isFollowMode()) this.refreshFollowLists(true); }, 10000);
 
@@ -1741,13 +1741,13 @@
         tempTone() { return this._tone(this.system && this.system.temp_c, 70, 80); },
         diskTone() { return this._tone(this.system && this.system.disk && this.system.disk.percent, 80, 92); },
         fmtDuration(s) {
-          if (s == null) return '—';
+          if (s == null) return '-';
           const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
           if (d) return d + 'd ' + h + 'h';
           if (h) return h + 'h ' + m + 'm';
           return m + 'm';
         },
-        fmtNum(n) { return n == null ? '—' : n.toLocaleString(); },
+        fmtNum(n) { return n == null ? '-' : n.toLocaleString(); },
         modeLabel(m) { return { unfollow: 'Unfollow', follow: 'Follow', churn: 'Marketing' }[m] || m; },
         async saveWatchdog() {
           try {
@@ -1760,11 +1760,11 @@
         },
 
         // True if this exact event (type + account + server timestamp) was already
-        // handled — guards against the same event being delivered more than once
+        // handled - guards against the same event being delivered more than once
         // (e.g. a stale socket lingering on iOS PWA before the new one takes over).
         _isDup(type, data) {
           // Only dedup events that carry a server timestamp (unfollowed/skipped/…).
-          // Step events have no timestamp — every step is distinct, never dedup them.
+          // Step events have no timestamp - every step is distinct, never dedup them.
           if (!data || !data.timestamp) return false;
           const key = type + '|' + (data.username || '') + '|' + data.timestamp;
           this._seen = this._seen || new Set();
@@ -1842,7 +1842,7 @@
               this.followTotals.churn_unfollowed = (this.followTotals.churn_unfollowed || 0) + 1;
               this.pushActivity('churned', msg.data, 'neutral', 'Churned (no follow-back)', null);
             } else if (msg.type === 'step') {
-              // One step of a flow — appended under its row (per-user or per-post via key).
+              // One step of a flow - appended under its row (per-user or per-post via key).
               this._addAction((msg.data.username || '').toLowerCase() || null, msg.data.label, '', msg.data.tone || 'neutral', 'wait', msg.data._time, msg.data.key);
             } else if (msg.type === 'story_viewed') {
               this.pushActivity('story', msg.data, 'good', 'Reach', msg.data.detail || 'engaged');
@@ -1872,7 +1872,7 @@
         // row per user (expand to see their full history); the row jumps to the top
         // on each new action. Log lines (no username) are standalone rows. `time`
         // is the server-provided HH:MM:SS so all devices show identical times.
-        // Rows GROUP by `key` (defaults to the username — per-user for unfollow/
+        // Rows GROUP by `key` (defaults to the username - per-user for unfollow/
         // follow; per-POST for reach so each like is its own row). `uname` is just
         // the @handle shown. `time` is the server clock so devices match.
         _addAction(uname, label, detail, tone, iconKey, time, key) {
@@ -1897,19 +1897,19 @@
           this._capActivity();
         },
 
-        // A concrete account action (followed/unfollowed/skipped/…) — grouped by key.
+        // A concrete account action (followed/unfollowed/skipped/…) - grouped by key.
         pushActivity(kind, data, tone, title, detail) {
           this._addAction((data.username || '').toLowerCase() || null, title, detail, tone, kind, data._time, data.key);
         },
 
         // A bot log line. Phase/status narrations are NOT fed here (they live in the
-        // status bar) so the activity log stays clean — only real logs/errors show.
+        // status bar) so the activity log stays clean - only real logs/errors show.
         pushNarr(title, tone, iconKey, time) {
           if (tone === 'phase') return;
           this._addAction(null, title, '', tone, iconKey, time);
         },
 
-        // Build a feed entry from a raw server event — used to REPLAY the shared log
+        // Build a feed entry from a raw server event - used to REPLAY the shared log
         // on load. Mirrors the live handlers' labels so groups stay consistent.
         _feedEvent(msg) {
           const d = msg.data || {}, t = d._time;
@@ -2028,7 +2028,7 @@
         },
 
         async scrapeNow() {
-          try { await this.fetch('/api/scrape', { method: 'POST' }); this.showToast('Scraping started — watch the status bar', 'success'); }
+          try { await this.fetch('/api/scrape', { method: 'POST' }); this.showToast('Scraping started - watch the status bar', 'success'); }
           catch (e) { this.showToast(e.message, 'error'); }
         },
 
@@ -2374,7 +2374,7 @@
               this.deployFiles = [];
               if (this.$refs.deployInput) this.$refs.deployInput.value = '';
             } else {
-              this.showToast('Nothing deployed' + (j.rejected.length ? ' — ' + j.rejected.join(', ') + ' not deployable' : ''), 'error');
+              this.showToast('Nothing deployed' + (j.rejected.length ? ' - ' + j.rejected.join(', ') + ' not deployable' : ''), 'error');
             }
           } catch (e) { this.showToast(e.message, 'error'); }
           finally { this.deployBusy = false; }

@@ -138,7 +138,7 @@ def _watchdog_loop():
             srv = cfg.get("server", {}) or {}
             if not srv.get("autostart"):
                 state_manager.emit("log", {"level": "error", "msg":
-                    f"watchdog: bot stuck {age:.0f}s but server.autostart is off — "
+                    f"watchdog: bot stuck {age:.0f}s but server.autostart is off - "
                     "not restarting (it wouldn't resume). Enable autostart."})
                 last_restart = time.time()
                 continue
@@ -146,7 +146,7 @@ def _watchdog_loop():
                 continue
             service = srv.get("service_name", "unfollower")
             state_manager.emit("log", {"level": "error", "msg":
-                f"watchdog: no heartbeat for {age:.0f}s — restarting {service}"})
+                f"watchdog: no heartbeat for {age:.0f}s - restarting {service}"})
             try:
                 subprocess.Popen(_restart_cmd(service))
                 last_restart = time.time()
@@ -339,7 +339,7 @@ async def add_to_whitelist(payload: WhitelistAdd):
 @app.post("/api/skip/add")
 async def add_to_skip(payload: WhitelistAdd):
     """Append a username to skipped.log (the per-row 'Skip' button). Skipped
-    accounts are treated as done, so the bot won't try to unfollow them — unlike
+    accounts are treated as done, so the bot won't try to unfollow them - unlike
     Exclude/whitelist this isn't permanent protection, just 'leave this one'."""
     u = payload.username.strip().lstrip("@").lower()
     if not u:
@@ -872,7 +872,7 @@ _scraper_proc = None   # subprocess.Popen handle for the server-managed scraper
 
 def _start_scraper_proc() -> bool:
     """Launch the scraper service as a child process (same venv). No-op if one is
-    already alive (managed, orphaned after a server restart, or systemd) — the PID
+    already alive (managed, orphaned after a server restart, or systemd) - the PID
     file makes that check work across all three."""
     global _scraper_proc
     if bot.scraper_running():
@@ -1054,7 +1054,7 @@ async def deploy_pull(background_tasks: BackgroundTasks):
     pulling never disturbs the Pi's own config or live data. Restart runs as a
     background task so this response flushes first."""
     if _git(["rev-parse", "--is-inside-work-tree"]).returncode != 0:
-        raise HTTPException(400, "Not a git repository on the server — finish the git deploy setup first.")
+        raise HTTPException(400, "Not a git repository on the server - finish the git deploy setup first.")
     branch = (_git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout or "main").strip() or "main"
     fr = _git(["fetch", "origin", branch], timeout=90)
     if fr.returncode != 0:

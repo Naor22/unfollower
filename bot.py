@@ -96,7 +96,7 @@ class StateManager:
         self._subscribers: list = []
         self._loop = None
         # The separate scraper service uses its own StateManager but must NOT
-        # touch the shared activity.json (the server's StateManager owns it) — two
+        # touch the shared activity.json (the server's StateManager owns it) - two
         # processes writing the same file would corrupt the feed. persist_events=
         # False keeps emit/update working (in-memory) without disk I/O.
         self._persist = persist_events
@@ -237,7 +237,7 @@ def parse_count(text: str) -> Optional[int]:
 def parse_log_ts(s: str) -> Optional[float]:
     """Parse a 'YYYY-MM-DD HH:MM:SS' log timestamp to a local-time epoch, or
     None. Logs are written with time.strftime (local), so we read them back the
-    same way — used by the churn timer to age out follows."""
+    same way - used by the churn timer to age out follows."""
     try:
         return time.mktime(time.strptime(s.strip(), "%Y-%m-%d %H:%M:%S"))
     except Exception:
@@ -476,7 +476,7 @@ def read_filter_rejected_log() -> list[dict]:
 
 
 def read_filter_checked_log() -> list[dict]:
-    """Candidates the scraper service already evaluated and KEPT — tracked only so
+    """Candidates the scraper service already evaluated and KEPT - tracked only so
     the scraper doesn't re-check them (these stay in the pool to be followed)."""
     path = _log_path("filter_checked_log", "data/filter_checked.log")
     if not path.exists():
@@ -593,7 +593,7 @@ class Bot:
         self._pause_event = threading.Event()  # set = paused
         self._lock = threading.Lock()
         self._me = ""  # logged-in handle; set in _run, used by the modal fallback
-        self._run_skip = set()  # accounts that hard-failed THIS run — skip so one
+        self._run_skip = set()  # accounts that hard-failed THIS run - skip so one
                                 # poison profile can't jam the queue every batch
         self._warmed = False    # one-time external-scraper pool warm-up gate
         self._actions_since_resync = 0  # drives periodic account-count re-sync
@@ -676,7 +676,7 @@ class Bot:
 
     def _bot_is_acting(self) -> bool:
         """Used by the scraper process: is the main bot actively working right now?
-        (Fresh 'acting' flag — stale/absent means idle or crashed → free to scrape.)"""
+        (Fresh 'acting' flag - stale/absent means idle or crashed → free to scrape.)"""
         try:
             d = json.loads(BOT_RUNTIME.read_text(encoding="utf-8"))
         except Exception:
@@ -764,7 +764,7 @@ class Bot:
             except Exception:
                 pass
             time.sleep(0.4)
-        # Timed out with neither clear signal — fall back to "logged in only if
+        # Timed out with neither clear signal - fall back to "logged in only if
         # no login form is present" so we don't wrongly attempt a login.
         try:
             return page.locator(self._LOGIN_FORM_SEL).count() == 0
@@ -874,7 +874,7 @@ class Bot:
 
         pw_field, used_pw_sel = self._first_visible(page, self.PASSWORD_SELECTORS)
         if pw_field is None:
-            # Click username first — IG sometimes lazy-mounts the password input on focus.
+            # Click username first - IG sometimes lazy-mounts the password input on focus.
             try:
                 user_field.click(timeout=2000)
                 time.sleep(0.5)
@@ -919,7 +919,7 @@ class Bot:
             except Exception:
                 clicked = False
         if not clicked:
-            # Fall back: press Enter on the password field — the form submits natively.
+            # Fall back: press Enter on the password field - the form submits natively.
             self.state.update(phase_detail="submitting login (Enter on password)")
             try:
                 pw_field.press("Enter")
@@ -938,11 +938,11 @@ class Bot:
 
         def login_phase_from_url(url: str) -> str:
             if "/challenge" in url:
-                return "captcha / challenge — solve it in the browser"
+                return "captcha / challenge - solve it in the browser"
             if "/two_factor" in url or "two-factor" in url:
-                return "2FA — enter the code in the browser"
+                return "2FA - enter the code in the browser"
             if "/accounts/login" in url:
-                return "waiting for login response (solve captcha/2FA in browser — up to 1 min)"
+                return "waiting for login response (solve captcha/2FA in browser - up to 1 min)"
             return "login almost done"
 
         while time.monotonic() < end:
@@ -957,15 +957,15 @@ class Bot:
 
             # Success: we've landed on a non-login, non-challenge URL.
             if "/accounts/login" not in url and "/challenge" not in url and "/two_factor" not in url:
-                # Quick sanity check — still a valid IG page (not redirected to a non-IG host).
+                # Quick sanity check - still a valid IG page (not redirected to a non-IG host).
                 if "instagram.com" in url:
                     break
 
             # Surface a 2FA input even if URL is still /accounts/login (older flows).
             try:
-                if page.locator(twofa_sel).count() > 0 and last_phase != "2FA — enter the code in the browser":
-                    self.state.update(phase_detail="2FA — enter the code in the browser")
-                    last_phase = "2FA — enter the code in the browser"
+                if page.locator(twofa_sel).count() > 0 and last_phase != "2FA - enter the code in the browser":
+                    self.state.update(phase_detail="2FA - enter the code in the browser")
+                    last_phase = "2FA - enter the code in the browser"
             except Exception:
                 pass
 
@@ -999,7 +999,7 @@ class Bot:
             except Exception:
                 continue
 
-        # Final verification — we should now be off the login / challenge pages.
+        # Final verification - we should now be off the login / challenge pages.
         time.sleep(1.5)
         if "/accounts/login" in page.url or "/challenge" in page.url:
             shot = self._screenshot(page, "login_stuck")
@@ -1013,7 +1013,7 @@ class Bot:
         '(d) => Array.from(d.querySelectorAll(\'a[role="link"][href^="/"]\'))'
         '.map(a => a.getAttribute("href"))'
     )
-    # Scroll the last rendered row into view — this is what fires IG's
+    # Scroll the last rendered row into view - this is what fires IG's
     # infinite-scroll observer. Setting scrollTop=scrollHeight does NOT work on
     # the current modal (the container's scrollTop stays pinned at 0).
     # Align-to-top (default scrollIntoView) forces a real scroll and reveals
@@ -1040,7 +1040,7 @@ class Bot:
 
         On your OWN profile IG renders the following count as <a href="#"> (JS
         driven), not /{user}/following/, and the /following/ URL no longer opens
-        an overlay — so we click the count link by its accessible name.
+        an overlay - so we click the count link by its accessible name.
         """
         page.goto(f"https://www.instagram.com/{my_username}/", wait_until="domcontentloaded")
         self._jitter(2.0, 3.5)
@@ -1143,7 +1143,7 @@ class Bot:
         except PWTimeout:
             shot = self._screenshot(page, f"scrape_no_dialog_{profile}")
             raise RuntimeError(
-                f"{which} dialog never opened for @{profile} — private or rate-limited "
+                f"{which} dialog never opened for @{profile} - private or rate-limited "
                 f"(shot:{shot})"
             )
         return page.locator('div[role="dialog"]').last
@@ -1242,7 +1242,7 @@ class Bot:
 
     def _scrape_hashtag(self, page, tag: str, cap: int = 200,
                         per_post: int = 60) -> list[str]:
-        """Return up to `cap` usernames sourced from a hashtag — the authors and
+        """Return up to `cap` usernames sourced from a hashtag - the authors and
         commenters of recent posts under #tag. People posting/commenting on a
         niche hashtag are high-intent targets."""
         tag = (tag or "").strip().lstrip("#").lower()
@@ -1417,7 +1417,7 @@ class Bot:
         try role-based exact matches first, then a text-is fallback scoped to the
         header so we never grab a 'Following' count link elsewhere on the page.
         """
-        # NOTE: substring (not exact) match — IG's button has a chevron icon
+        # NOTE: substring (not exact) match - IG's button has a chevron icon
         # whose label is appended to the accessible name, so the name is e.g.
         # "Following ..." not exactly "Following". exact=True returns 0 matches.
         # Scoped to <header>: the profile page also renders a 'Suggested for you'
@@ -1443,7 +1443,7 @@ class Bot:
     def _click_unfollow_control(self, scope, timeout_s: float = 10.0) -> bool:
         """Wait for, then click, the 'Unfollow' control inside a dialog scope.
 
-        The menu content loads asynchronously — IG first shows a spinner, then
+        The menu content loads asynchronously - IG first shows a spinner, then
         renders Mute / Restrict / Unfollow / ... So we must POLL until the item
         appears rather than checking once: Playwright's is_visible() returns the
         current state immediately (it does not wait), so a single check against a
@@ -1473,7 +1473,7 @@ class Bot:
         return False
 
     # Instagram's soft block / rate-limit interstitials. When you exceed the
-    # unfollow rate it silently rejects the action and pops one of these — the
+    # unfollow rate it silently rejects the action and pops one of these - the
     # header button stays 'Following', so the unfollow never lands.
     _RATE_LIMIT_RE = re.compile(
         r"try again later|we restrict certain activity|temporarily blocked|"
@@ -1491,7 +1491,7 @@ class Bot:
         except Exception:
             return False
 
-    # A checkpoint/challenge/suspension interstitial — the moment to STOP, not
+    # A checkpoint/challenge/suspension interstitial - the moment to STOP, not
     # retry (retrying during an account review hammers IG and deepens the flag).
     _CHECKPOINT_TEXT_RE = re.compile(
         r"we suspended your account|we disabled your account|"
@@ -1518,7 +1518,7 @@ class Bot:
 
     # IG's "this account is gone" interstitial. Distinguishes a genuinely
     # deleted/disabled/blocked profile (permanent skip) from a page that simply
-    # hasn't finished loading (transient — should be retried, not skipped).
+    # hasn't finished loading (transient - should be retried, not skipped).
     _UNAVAILABLE_RE = re.compile(
         r"page isn'?t available|sorry, this page|user not found|"
         r"page not found|content isn'?t available|account.*removed",
@@ -1536,13 +1536,13 @@ class Bot:
             if self._UNAVAILABLE_RE.search(body):
                 return True
             if page.locator("header").count() > 0:
-                return False  # header is here after all — not unavailable
+                return False  # header is here after all - not unavailable
             try:
                 page.reload(wait_until="domcontentloaded")
                 self._jitter(1.5, 3.0)
             except Exception:
                 break
-        # Header never showed and IG never said "unavailable" — ambiguous, so treat
+        # Header never showed and IG never said "unavailable" - ambiguous, so treat
         # as NOT unavailable (caller returns transient -> retry, never a hard skip).
         return False
 
@@ -1585,7 +1585,7 @@ class Bot:
               key: Optional[str] = None) -> None:
         """Record one step of a flow: shows in the status bar AND streams a 'step'
         event so the dashboard lists every step under one expandable row. Rows group
-        by `key` (defaults to username — per-user for unfollow/follow; per-POST for
+        by `key` (defaults to username - per-user for unfollow/follow; per-POST for
         reach, where one user can be liked across many separate posts)."""
         self.state.update(phase_detail=f"@{username or 'post'}: {label}")
         payload = {"username": username, "label": label, "tone": tone}
@@ -1615,7 +1615,7 @@ class Bot:
                 return result
 
             # Transient (or unverified-missing): fall back to the independent modal
-            # surface. Try it at most once — it's heavy (navigates to our own
+            # surface. Try it at most once - it's heavy (navigates to our own
             # profile) and a second go rarely helps; if it rate-limits, bail out.
             if use_modal and self._me and not modal_tried:
                 modal_tried = True
@@ -1623,21 +1623,21 @@ class Bot:
                 if modal == "not_following":
                     modal = self._confirm_not_following(page, target)
                 # Terminal outcomes from the modal (ok / not_following / rate_limited)
-                # are authoritative — the following list is the ground truth for the
+                # are authoritative - the following list is the ground truth for the
                 # relationship. Only its own modal_* failures fall through to a retry.
                 if modal in self._TERMINAL or modal.startswith("rate_limited"):
                     return modal
 
             if attempt < retries:
                 self._clear_dialogs(page)
-                self._step(target, f"{result} — retry {attempt + 1}/{retries}", "bad")
+                self._step(target, f"{result} - retry {attempt + 1}/{retries}", "bad")
                 self._jitter(lo, hi)
 
         return result
 
     def _i_follow_them(self, page, target: str):
         """Definitive check: open the TARGET's FOLLOWERS list and search for OUR own
-        username — if we follow them, we're in their followers. Returns True / False
+        username - if we follow them, we're in their followers. Returns True / False
         / None (inconclusive). A different surface from the header/post/own-list, so
         it catches relationships the others misread."""
         me = self._me
@@ -1700,11 +1700,11 @@ class Bot:
     def _confirm_not_following(self, page, target: str) -> str:
         """Final safety before a PERMANENT 'not_following' skip: confirm via the
         target's followers list. If we're actually in their followers (we follow
-        them), return a transient so it's retried — never wrongly skipped."""
+        them), return a transient so it's retried - never wrongly skipped."""
         self._step(target, "double-checking via their followers list")
         res = self._i_follow_them(page, target)
         if res is True:
-            self._step(target, "we ARE in their followers — keep trying, not a skip", "bad")
+            self._step(target, "we ARE in their followers - keep trying, not a skip", "bad")
             return "following_confirmed"   # transient -> retried, not skipped
         if res is False:
             self._step(target, "confirmed not following", "neutral")
@@ -1720,7 +1720,7 @@ class Bot:
         try:
             btn.click(timeout=5000)
         except Exception:
-            self._step(target, "request button stuck — recording as done", "neutral")
+            self._step(target, "request button stuck - recording as done", "neutral")
             return "ok"
         # If a confirm dialog appears, click its withdraw/unfollow control.
         try:
@@ -1736,7 +1736,7 @@ class Bot:
         if self._find_following_button(page) is None:
             self._step(target, "follow request withdrawn", "good")
         else:
-            self._step(target, "request still pending — recording as done", "neutral")
+            self._step(target, "request still pending - recording as done", "neutral")
         return "ok"
 
     def _clear_dialogs(self, page) -> None:
@@ -1756,12 +1756,12 @@ class Bot:
         try:
             page.goto(f"https://www.instagram.com/{target}/", wait_until="domcontentloaded")
         except Exception:
-            self._step(target, "page load failed — retry", "bad")
+            self._step(target, "page load failed - retry", "bad")
             return "profile_not_ready"
         if self._checkpoint_detected(page):
             return "checkpoint"
 
-        # Wait for the profile header to actually render — IG loads it AFTER
+        # Wait for the profile header to actually render - IG loads it AFTER
         # domcontentloaded, so checking immediately (the old behaviour) reported a
         # false 'profile_not_ready' on slow loads. Give it real time.
         try:
@@ -1770,7 +1770,7 @@ class Bot:
             if self._profile_truly_unavailable(page):
                 self._step(target, "profile unavailable", "bad")
                 return "private_or_missing"
-            self._step(target, "header didn't load — retry", "bad")
+            self._step(target, "header didn't load - retry", "bad")
             return "profile_not_ready"
         self._jitter(2.0, 4.5)
         self._random_mouse(page)
@@ -1781,23 +1781,23 @@ class Bot:
             # EXACT 'Follow' button is showing IN THE HEADER. Both qualifiers matter:
             #   - exact=True: substring 'Follow' would also match 'Following'.
             #   - header scope: the profile page also shows a 'Suggested for you'
-            #     carousel full of OTHER accounts' Follow buttons — matching those
+            #     carousel full of OTHER accounts' Follow buttons - matching those
             #     was causing false 'not following' skips on people we do follow.
             hdr = page.locator("header")
             if (hdr.get_by_role("button", name="Follow", exact=True).count() > 0
                     or hdr.get_by_role("button", name="Follow Back", exact=True).count() > 0):
                 self._step(target, "not following (Follow button in header)", "neutral")
                 return "not_following"
-            # Neither a Following nor an exact Follow button rendered — either the
+            # Neither a Following nor an exact Follow button rendered - either the
             # known IG action-row bug, or the header was still loading. Fall back to
             # the post '...' menu (and then the following-list modal), which read the
             # real relationship instead of guessing from a half-rendered header.
-            self._step(target, "no header button — trying post menu", "neutral")
+            self._step(target, "no header button - trying post menu", "neutral")
             return self._unfollow_via_post(page, target)
 
         # Pending follow-request (private account we requested earlier, not yet
         # accepted) shows a 'Requested' button. Clicking it doesn't open the normal
-        # Unfollow menu — it withdraws the request — so the regular path fails and
+        # Unfollow menu - it withdraws the request - so the regular path fails and
         # then burns the whole fallback chain + retries. Handle it directly and
         # return terminal so we don't waste minutes on it.
         try:
@@ -1902,7 +1902,7 @@ class Bot:
 
     def _post_menu_still_following(self, page) -> bool:
         """After unfollowing via a post, reopen its '...' menu and report whether
-        it STILL offers 'Unfollow' (i.e. the action didn't land). Best-effort —
+        it STILL offers 'Unfollow' (i.e. the action didn't land). Best-effort -
         ambiguity is treated as success by the caller, since the header button is
         broken for these profiles and this is the only signal we have."""
         if not self._open_post_more_menu(page):
@@ -1925,10 +1925,10 @@ class Bot:
     def _unfollow_via_post(self, page, target: str) -> str:
         """Fallback for profiles whose header Following button never renders (an
         IG web bug). Open one of the user's posts and unfollow from the post's
-        '...' (More options) menu, which still works — this mirrors the manual
+        '...' (More options) menu, which still works - this mirrors the manual
         workaround. Accounts with no posts can't use this path."""
         # Read the first post's URL and navigate straight to it instead of
-        # clicking the thumbnail — clicking the grid is flaky because IG's hover
+        # clicking the thumbnail - clicking the grid is flaky because IG's hover
         # overlay (likes/comments) intercepts the click, which is what caused
         # 'post_open_failed'. A direct goto always lands on the post page.
         post = page.locator('a[href*="/p/"], a[href*="/reel/"]').first
@@ -1938,7 +1938,7 @@ class Bot:
         except Exception:
             href = None
         if not href:
-            # No header button AND no posts to open — nothing we can do here.
+            # No header button AND no posts to open - nothing we can do here.
             shot = self._screenshot(page, f"fail_noposts_{target}")
             return f"no_button_no_posts (shot:{shot})"
 
@@ -1957,7 +1957,7 @@ class Bot:
             return f"post_more_menu_missing (shot:{shot})"
         self._jitter(0.5, 1.2)
 
-        # The options menu now lists Unfollow (poll for it — it loads async too).
+        # The options menu now lists Unfollow (poll for it - it loads async too).
         self._step(target, "clicking Unfollow in post menu")
         menu = page.locator('div[role="dialog"]').last
         if not self._click_unfollow_control(menu):
@@ -1967,7 +1967,7 @@ class Bot:
 
         # Clicking 'Unfollow' in the post menu opens a confirmation dialog
         # ('Unfollow @user?') that MUST be clicked to finish the action. Poll for
-        # it and click it — a one-shot presence check races the dialog's open
+        # it and click it - a one-shot presence check races the dialog's open
         # animation and, when it loses, silently leaves the account followed
         # (that was the cause of post_verify_failed). If no confirmation appears
         # (some variants unfollow on the first click), the poll just no-ops.
@@ -2008,7 +2008,7 @@ class Bot:
         self._jitter(1.0, 2.0)
 
         # Type the target into the modal's search box (human-paced). Try a few
-        # selectors — IG's input markup shifts and a missed box is the main reason
+        # selectors - IG's input markup shifts and a missed box is the main reason
         # this path used to silently fail and mark followed users 'not_following'.
         box = None
         for getter in (
@@ -2063,14 +2063,14 @@ class Bot:
 
         if absent:
             self._step(target, "not in your following list", "neutral")
-            return "not_following"            # IG confirmed no match — we don't follow them
+            return "not_following"            # IG confirmed no match - we don't follow them
         if not found:
             shot = self._screenshot(page, f"fail_modalinconclusive_{target}")
             return f"modal_inconclusive (shot:{shot})"   # transient -> retried, NOT skipped
 
         # Click the 'Following' button WITHIN the target's row (not the first one in
         # the dialog, which could be a different account if the list isn't filtered).
-        self._step(target, "found in list — clicking Unfollow")
+        self._step(target, "found in list - clicking Unfollow")
         row = row_link.locator("xpath=ancestor::div[.//button or .//*[@role='button']][1]")
         try:
             btn = row.get_by_role(
@@ -2199,7 +2199,7 @@ class Bot:
         self._actions_since_resync = 0
 
     def fetch_account_now(self) -> bool:
-        """One-shot: connect, read our own counts, persist, disconnect — so the
+        """One-shot: connect, read our own counts, persist, disconnect - so the
         status bar can refresh while the bot is idle (dashboard open). No-op if a
         run/scrape is active (those update the counts on their own)."""
         if self.is_running or getattr(self, "_account_fetching", False):
@@ -2241,6 +2241,17 @@ class Bot:
         except Exception:
             return 0
 
+    def _scraper_phase(self) -> str:
+        """The scraper service's current phase (from its status file) if it's alive,
+        for surfacing progress on the bot's warm-up line. '' if stale/absent."""
+        try:
+            d = json.loads(SCRAPER_STATUS.read_text(encoding="utf-8"))
+            if time.time() - float(d.get("ts", 0)) < 180:
+                return str(d.get("phase") or "")
+        except Exception:
+            pass
+        return ""
+
     def _write_scraper_status(self, error: Optional[str] = None,
                               phase: str = "") -> None:
         """Heartbeat + counts for the dashboard's Scraper card. Atomic write so the
@@ -2278,11 +2289,11 @@ class Bot:
         can't judge them; the core bot handles those at follow time)."""
         try:
             page.goto(f"https://www.instagram.com/{target}/",
-                      wait_until="domcontentloaded", timeout=20000)
-            page.wait_for_selector("header", timeout=12000)
+                      wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_selector("header", timeout=9000)
         except Exception:
             return "unavailable", {}
-        self._jitter(0.4, 1.2)   # brief settle (read-only burner — light pacing is fine)
+        self._jitter(0.2, 0.5)   # tiny settle (read-only burner - vetting can be brisk)
         private = self._is_private(page)
         counts = self._read_profile_counts(page)
         meta = {
@@ -2339,7 +2350,7 @@ class Bot:
             # ready pool reaches the high-water mark (checked every few profiles).
             if processed and processed % 3 == 0:
                 if coordinate and self._bot_is_acting():
-                    self._write_scraper_status(phase="paused — bot became active")
+                    self._write_scraper_status(phase="paused - bot became active")
                     break
                 if self._pool_ready(cfg) >= high:
                     break
@@ -2376,7 +2387,7 @@ class Bot:
         """Entry point for the standalone scraper service (separate process, its
         own Chrome / burner account). Scrapes sources, browser-filters candidates,
         and atomically publishes the cleaned pool for the core bot to consume.
-        Never follows/unfollows. Browser navigation only — no IG API."""
+        Never follows/unfollows. Browser navigation only - no IG API."""
         try:
             load_dotenv(ROOT / ".env", override=True)
             # The done-set excludes accounts the MAIN account already follows/handled
@@ -2425,10 +2436,10 @@ class Bot:
                     conn.update(browser=b, context=c, page=pg, cdp=ucdp, persistent=upers, ok=True)
                     if not self._is_logged_in(pg):
                         self._write_scraper_status(
-                            error="scraper Chrome is not logged in — run scraper_login.py "
+                            error="scraper Chrome is not logged in - run scraper_login.py "
                                   "to log the burner account in")
                         self.state.emit("log", {"level": "error",
-                                                "msg": "burner not logged in — run scraper_login.py"})
+                                                "msg": "burner not logged in - run scraper_login.py"})
                         disconnect()
                         return None
                     return pg
@@ -2470,19 +2481,19 @@ class Bot:
                     ready = self._pool_ready(day_cfg)
                     if coordinate and self._bot_is_acting():
                         disconnect()   # bot is working → free the Pi, close our Chrome
-                        self._write_scraper_status(phase=f"idle — bot active (pool ready {ready}/{high})")
+                        self._write_scraper_status(phase=f"idle - bot active (pool ready {ready}/{high})")
                         self._interruptible_sleep(60)
                         continue
                     if ready >= high:
                         disconnect()
-                        self._write_scraper_status(phase=f"pool full — {ready} ready (≥ {high}); idle")
+                        self._write_scraper_status(phase=f"pool full - {ready} ready (≥ {high}); idle")
                         self._interruptible_sleep(idle)
                         continue
 
                     # --- ACTIVE: bring up the burner browser and do a pass ---
                     page = ensure_connected()
                     if page is None:
-                        self._interruptible_sleep(30)   # not logged in — retry later
+                        self._interruptible_sleep(30)   # not logged in - retry later
                         continue
                     # 1. scrape raw usernames into the TODO backlog.
                     self._write_scraper_status(phase="scraping sources")
@@ -2575,7 +2586,7 @@ class Bot:
         return None
 
     def _profile_text(self, page) -> str:
-        """Lowercased header/main innerText of the loaded profile — used for
+        """Lowercased header/main innerText of the loaded profile - used for
         bio-keyword matching during source discovery. Same eval the Strategy-2
         path of _read_profile_counts uses, so no extra page round-trip cost."""
         try:
@@ -2587,8 +2598,8 @@ class Bot:
 
     def _maybe_discover_source(self, page, target: str, counts: dict,
                               disc_cfg: dict) -> None:
-        """If the loaded profile looks like a niche INFLUENCER — bio matches a
-        keyword, no negative keyword, follower count in the influencer range —
+        """If the loaded profile looks like a niche INFLUENCER - bio matches a
+        keyword, no negative keyword, follower count in the influencer range -
         queue it for review in discovered_sources.json. Runs on profiles we're
         already visiting during the follow pass, so it's near-free. The dashboard
         promotes queued entries into follow.sources (review queue, not auto-add)."""
@@ -2767,13 +2778,13 @@ class Bot:
         'skipped_filtered', 'rate_limited (...)', or a transient failure string.
 
         lean=True (external-scraper mode): the scraper already vetted this account,
-        so skip the redundant filter reads (private / counts / discovery) — just
+        so skip the redundant filter reads (private / counts / discovery) - just
         confirm we're not already following, then follow cleanly."""
         filters = filters or {}
         self._step(target, "opening profile")
         page.goto(f"https://www.instagram.com/{target}/", wait_until="domcontentloaded")
         # Wait for the header to render before deciding (avoids false 'unavailable'
-        # on a slow load — same fix as the unfollow side).
+        # on a slow load - same fix as the unfollow side).
         try:
             page.wait_for_selector("header", timeout=12000)
         except Exception:
@@ -2784,7 +2795,7 @@ class Bot:
         self._jitter(1.0, 2.5) if lean else self._jitter(2.0, 4.5)
         self._random_mouse(page)
 
-        # Already following (or request pending)? Nothing to do. (always — "I'm
+        # Already following (or request pending)? Nothing to do. (always - "I'm
         # already following him" → skip.)
         if self._find_following_button(page) is not None:
             self._step(target, "already following", "neutral")
@@ -2792,15 +2803,15 @@ class Bot:
 
         # They already follow us → skip (no net-new reach). This is the ONE
         # relationship check we always do, including lean mode, because the burner
-        # can't judge it — it's relative to the main account. Read from the header
+        # can't judge it - it's relative to the main account. Read from the header
         # we already loaded, so it's nearly free.
         if filters.get("skip_already_follows_me", True) and self._follows_you(page):
-            self._step(target, "they already follow you — skip", "neutral")
+            self._step(target, "they already follow you - skip", "neutral")
             return "skipped_follows_you"
 
         if not lean:
             if filters.get("skip_private", True) and self._is_private(page):
-                self._step(target, "private account — skip", "neutral")
+                self._step(target, "private account - skip", "neutral")
                 return "skipped_private"
 
             counts = self._read_profile_counts(page)
@@ -2809,7 +2820,7 @@ class Bot:
             self._maybe_discover_source(page, target, counts, disc_cfg or {})
             reason = self._passes_filters(counts, filters)
             if reason == "no_posts":
-                self._step(target, "no posts — skip", "neutral")
+                self._step(target, "no posts - skip", "neutral")
                 return "skipped_no_posts"
             if reason == "filtered":
                 self._step(target, "filtered out (followers/following limits)", "neutral")
@@ -2820,7 +2831,7 @@ class Bot:
             # No header Follow button (the same IG web bug the unfollow side hits).
             # Fall back to opening a post and using the Follow button next to the
             # author's name in the post header, which still works.
-            self._step(target, "no header Follow button — trying via a post", "neutral")
+            self._step(target, "no header Follow button - trying via a post", "neutral")
             return self._follow_via_post(page, target)
 
         self._step(target, "clicking Follow")
@@ -2868,9 +2879,9 @@ class Bot:
         a real story was actually playing.
 
         Detection: a viewable story makes IG redirect to
-        /stories/<user>/<numeric-media-id>/. If that id never appears — no story, or
+        /stories/<user>/<numeric-media-id>/. If that id never appears - no story, or
         the account is private and we don't follow them, or it bounced back to the
-        profile — there's nothing to view, so we return False (skip). The old check
+        profile - there's nothing to view, so we return False (skip). The old check
         (just 'still on a /stories/ URL') falsely counted those as views."""
         target = target.lstrip("@").lower()
         try:
@@ -2964,7 +2975,7 @@ class Bot:
 
     def _action_bar(self, page):
         """Locator for the OPEN post's action bar. Anchors on ANY action-bar-only
-        icon (Comment / Save / Share — reels lack a 'Comment' svg, so we can't rely
+        icon (Comment / Save / Share - reels lack a 'Comment' svg, so we can't rely
         on it alone) and returns the nearest ancestor that holds the Like/Unlike.
         That like is the POST's, never a comment's heart. None if not found."""
         end = time.monotonic() + 5
@@ -2991,7 +3002,7 @@ class Bot:
         if bar is not None:
             try:
                 if bar.locator('svg[aria-label="Unlike"]').first.is_visible(timeout=500):
-                    return False   # already liked — don't toggle off
+                    return False   # already liked - don't toggle off
             except Exception:
                 pass
             try:
@@ -3032,7 +3043,7 @@ class Bot:
         if after > before:
             return True
 
-        # Couldn't confirm — capture state so we can fix it precisely.
+        # Couldn't confirm - capture state so we can fix it precisely.
         try:
             likes = page.locator('svg[aria-label="Like"]').count()
         except Exception:
@@ -3046,7 +3057,7 @@ class Bot:
     def _engage_after_follow(self, page, target: str, eng_cfg: dict) -> None:
         """Optional touches right after a follow (still on/near the profile): view
         their story and/or like a couple posts. Controlled by follow.engagement.
-        Never raises — engagement is best-effort and must not abort a follow."""
+        Never raises - engagement is best-effort and must not abort a follow."""
         if not eng_cfg:
             return
         try:
@@ -3063,7 +3074,7 @@ class Bot:
         """Candidate-pool members eligible for a story check: not in the follow done
         set, and not checked within the last `story_recheck_hours`. The recheck
         window means we cycle back to accounts later (to catch new stories) instead
-        of checking each only once — so story-reach keeps running, but we don't spam
+        of checking each only once - so story-reach keeps running, but we don't spam
         the same account in a tight loop."""
         my = (os.getenv("IG_USERNAME") or "").lower()
         recheck_h = float((load_config().get("follow", {}) or {})
@@ -3086,7 +3097,7 @@ class Bot:
             if u in done:
                 continue
             if cutoff is not None and last_checked.get(u, 0.0) >= cutoff:
-                continue   # checked recently — revisit after the window
+                continue   # checked recently - revisit after the window
             out.append(u)
         return out
 
@@ -3236,12 +3247,12 @@ class Bot:
         n = self._record_soft_block(cfg)
         append_event("soft_block", f"#{n} today")
         if n >= int(pacing.get("soft_block_max_per_day", 2)):
-            self.state.update(phase_detail=f"{n} soft-blocks today — stopping for the day")
+            self.state.update(phase_detail=f"{n} soft-blocks today - stopping for the day")
             return "block"
         lo = float(pacing.get("rate_limit_cooldown_min_seconds", 3600))
         hi = float(pacing.get("rate_limit_cooldown_max_seconds", 7200))
         cooldown = random.uniform(lo, hi) * (2 ** (n - 1))   # exponential per hit
-        self.state.update(phase_detail=f"soft block #{n} — cooling down {cooldown / 3600:.1f}h")
+        self.state.update(phase_detail=f"soft block #{n} - cooling down {cooldown / 3600:.1f}h")
         self._interruptible_sleep(cooldown)
         return "cooldown"
 
@@ -3356,7 +3367,7 @@ class Bot:
         if not urls:
             shot = self._screenshot(page, f"reach_no_posts_{tag}")
             self.state.emit("log", {"level": "error",
-                "msg": f"reach: no posts found for #{tag} (shot:{shot}) — IG may be gating "
+                "msg": f"reach: no posts found for #{tag} (shot:{shot}) - IG may be gating "
                        "the hashtag page"})
         return urls
 
@@ -3385,7 +3396,7 @@ class Bot:
     def _next_reach_post(self, page, eng) -> Optional[str]:
         """Return a random un-liked post URL from a COMBINED pool spanning all tags.
         The pool is refilled by scraping ONE random hashtag grid, but only when it
-        runs low AND a cooldown has elapsed — IG gates the explore/hashtag grid pages
+        runs low AND a cooldown has elapsed - IG gates the explore/hashtag grid pages
         when hit too often, so we load them rarely and back off hard if one returns
         nothing (the gating signal). Likes themselves keep going from the cache."""
         sources = (load_config().get("follow", {}) or {}).get("sources", {}) or {}
@@ -3414,7 +3425,7 @@ class Bot:
                 # grid load so we don't hammer it; likes pause until the pool refills.
                 self._reach_scrape_cooldown = random.uniform(600, 1200)
                 self.state.emit("log", {"level": "info", "msg":
-                    f"reach: #{tag} grid returned nothing (likely gated) — "
+                    f"reach: #{tag} grid returned nothing (likely gated) - "
                     f"pausing hashtag loads ~{self._reach_scrape_cooldown / 60:.0f}m"})
 
         self.state.update(reach_pool=len(self._reach_pool))
@@ -3494,8 +3505,8 @@ class Bot:
 
     def _reach_one(self, page) -> str:
         """One reach action, per `engagement.reach_source`:
-        'hashtags' (default — like public posts under niche hashtags) or 'pool'
-        (legacy — engage candidate-pool members)."""
+        'hashtags' (default - like public posts under niche hashtags) or 'pool'
+        (legacy - engage candidate-pool members)."""
         eng = (load_config().get("follow", {}) or {}).get("engagement", {}) or {}
         cap = int(eng.get("story_reach_daily_cap", 100) or 0)
         if cap and self._story_today >= cap:
@@ -3517,14 +3528,14 @@ class Bot:
         isn't safe). In CDP mode the background worker handles it, so this no-ops.
         Views one pool story every `story_reach_every_actions` actions."""
         if self._story_worker_active:
-            # Defer to the background worker — but self-heal if its thread died
+            # Defer to the background worker - but self-heal if its thread died
             # (e.g. the 2nd CDP connection failed), so we don't silently stop
             # doing story-reach entirely.
             if self._story_thread is not None and self._story_thread.is_alive():
                 return
             self._story_worker_active = False
             self.state.emit("log", {"level": "info",
-                                    "msg": "story-reach: background worker gone — using interleaved mode"})
+                                    "msg": "story-reach: background worker gone - using interleaved mode"})
         cfg = load_config()
         eng = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
         if not eng.get("story_reach_enabled", False):
@@ -3533,7 +3544,7 @@ class Bot:
         if not self._can_act("likes", cfg):
             return
         # Fire after a RANDOM number of actions (not every single one) so a like
-        # doesn't follow every unfollow like clockwork — looks less robotic.
+        # doesn't follow every unfollow like clockwork - looks less robotic.
         self._story_tick += 1
         if self._story_tick < self._story_next:
             return
@@ -3551,7 +3562,7 @@ class Bot:
     def _story_worker_loop(self) -> None:
         """Background story-reach: its OWN CDP connection + tab, running truly
         concurrently with the main run on its own cadence (independent of the main
-        loop's pacing, pauses and long breaks). CDP-only — a second independent
+        loop's pacing, pauses and long breaks). CDP-only - a second independent
         connection to the same Chrome; other connection models can't safely open a
         parallel session, so they use the interleaved tick instead."""
         browser_cfg = load_config().get("browser", {}) or {}
@@ -3568,7 +3579,7 @@ class Bot:
                 n = len(self._build_story_queue())
                 mode0 = ((load_config().get("follow", {}) or {}).get("engagement", {}) or {}).get("reach_mode", "likes")
                 self.state.emit("log", {"level": "info",
-                    "msg": f"reach worker live ({mode0}) — {n} candidates queued"})
+                    "msg": f"reach worker live ({mode0}) - {n} candidates queued"})
                 try:
                     while not self._stop_event.is_set() and not self._story_stop.is_set():
                         # honor pause
@@ -3585,7 +3596,7 @@ class Bot:
                             continue
                         res = self._reach_one(page)
                         if res == "":
-                            self._story_sleep(120)   # nothing available — wait, retry
+                            self._story_sleep(120)   # nothing available - wait, retry
                             continue
                         # Pace by action type: likes are rate-limited (slowest),
                         # story views are cheap, misses scan fast.
@@ -3593,7 +3604,7 @@ class Bot:
                             self._story_sleep(60)
                         elif res == "ratelimit":
                             self.state.emit("log", {"level": "info",
-                                "msg": "reach: soft-blocked on likes — backing off"})
+                                "msg": "reach: soft-blocked on likes - backing off"})
                             self._story_sleep(random.uniform(600, 1200))
                         elif res == "liked":
                             lo = float(eng.get("reach_like_min_delay", 30))
@@ -3611,10 +3622,10 @@ class Bot:
                     except Exception:
                         pass
         except Exception as e:
-            # Could not open/keep the 2nd CDP tab — hand story-reach back to the
+            # Could not open/keep the 2nd CDP tab - hand story-reach back to the
             # interleaved fallback so it doesn't silently stop.
             self.state.emit("log", {"level": "error",
-                "msg": f"story-reach worker failed ({e}) — falling back to interleaved mode"})
+                "msg": f"story-reach worker failed ({e}) - falling back to interleaved mode"})
         finally:
             self._story_worker_active = False
 
@@ -3677,7 +3688,7 @@ class Bot:
                 self.state.update(phase_detail=f"daily cap {cap} reached")
                 return "cap"
             if max_actions is not None and attempts >= max_actions:
-                return "cap"   # batch limit — more may remain
+                return "cap"   # batch limit - more may remain
             if not self._can_act("unfollows", cfg):
                 return "cap"   # per-DAY cap reached or outside active hours
             attempts += 1
@@ -3720,7 +3731,7 @@ class Bot:
                 self.state.update(last_message=f"unavailable @{target} (skipped)")
             elif result.startswith("no_button_no_posts"):
                 # Header button is broken (IG bug) AND there are no posts to use
-                # the fallback '...' menu on — there's no UI path to unfollow, so
+                # the fallback '...' menu on - there's no UI path to unfollow, so
                 # mark it skipped (done) instead of failing it forever.
                 append_log(skipped_log, f"{ts}\t{target}\tno_unfollow_path")
                 self.state.emit("skipped", {"timestamp": ts, "username": target, "reason": "no_unfollow_path"})
@@ -3733,7 +3744,7 @@ class Bot:
                 # so we don't burn the whole window against a wall.
                 append_log(failed_log, f"{ts}\t{target}\t{result}")
                 new_failed = self.state.snapshot()["failed_count"] + 1
-                consecutive_errors = 0  # not a selector failure — handled separately
+                consecutive_errors = 0  # not a selector failure - handled separately
                 self.state.update(failed_count=new_failed,
                                   last_message=f"rate-limited @{target} (soft block)")
                 self.state.emit("failed", {"timestamp": ts, "username": target, "reason": "rate_limited"})
@@ -3755,11 +3766,11 @@ class Bot:
             if self._stop_event.is_set():
                 return "stopped"
 
-            # Interleaved story-reach marketing — ticks on EVERY processed target
+            # Interleaved story-reach marketing - ticks on EVERY processed target
             # (not just real unfollows), so it runs even through a stretch of skips.
             self._maybe_story_reach_tick(page)
 
-            # Pacing applies to REAL unfollows only — Instagram rate-limits the
+            # Pacing applies to REAL unfollows only - Instagram rate-limits the
             # unfollow ACTION, not page visits. Skips/failures (deleted,
             # not-following) continue after just a brief pause so we blow through
             # dead accounts quickly instead of waiting minutes.
@@ -3819,7 +3830,7 @@ class Bot:
         Mirrors _process_day: re-reads the whitelist + done set fresh, paces only
         real follows, backs off on soft blocks, and aborts on a run of failures.
         Returns 'cap' / 'exhausted' / 'stopped' / 'block'. max_actions caps the
-        accounts touched this call (for interleaving) — 'cap' when that batch
+        accounts touched this call (for interleaving) - 'cap' when that batch
         limit is hit (more may remain), 'exhausted' only when the pool is empty."""
         follow_cfg = cfg.get("follow", {}) or {}
         pacing = cfg["pacing"]
@@ -3860,7 +3871,7 @@ class Bot:
                 self.state.update(phase_detail=f"daily cap {daily_cap} reached")
                 return "cap"
             if max_actions is not None and attempts >= max_actions:
-                return "cap"   # batch limit — more may remain, caller re-invokes
+                return "cap"   # batch limit - more may remain, caller re-invokes
             if not self._can_act("follows", cfg):
                 return "cap"   # per-DAY cap reached or outside active hours
 
@@ -3872,7 +3883,7 @@ class Bot:
             # Core-bot self-scrape top-up (only when no external scraper owns the pool).
             if (not external_scraper and has_sources and len(eligible) < pool_min
                     and not self._stop_event.is_set()):
-                self.state.update(phase_detail=f"pool low ({len(eligible)}) — scraping sources")
+                self.state.update(phase_detail=f"pool low ({len(eligible)}) - scraping sources")
                 try:
                     self._scrape_candidates(page, cfg)
                 except Exception as e:
@@ -3892,12 +3903,12 @@ class Bot:
                     self.state.update(
                         phase_detail="no eligible candidates yet"
                                      + ("" if candidates else " (pool empty)"),
-                        last_message="nothing to follow — waiting for the scraper / sources",
+                        last_message="nothing to follow - waiting for the scraper / sources",
                     )
                 return "exhausted"
 
             # Follow the highest-intent sources first (commenters/hashtags before
-            # passive followers) — better exposure ROI per scarce daily action.
+            # passive followers) - better exposure ROI per scarce daily action.
             eligible.sort(key=lambda c: self._source_rank(c.get("source", "")))
             cand = eligible[0]
             target = cand["username"]
@@ -3970,7 +3981,7 @@ class Bot:
 
             self._maybe_story_reach_tick(page)   # interleaved story-reach, every target
 
-            # Pace real follows only — IG rate-limits the follow ACTION, not page
+            # Pace real follows only - IG rate-limits the follow ACTION, not page
             # visits. Skips/failures continue after a brief pause so we blow
             # through dead/ineligible accounts quickly.
             if result == "ok":
@@ -4009,7 +4020,7 @@ class Bot:
         also_trim = bool(churn_cfg.get("also_unfollow_following", False))
 
         # Approximate per-cycle budgets (rounds × batch). Real actions may be fewer
-        # when accounts skip, which only makes us gentler — safe.
+        # when accounts skip, which only makes us gentler - safe.
         u_cap = int(churn_cfg.get("daily_unfollow_cap", 80))
         t_cap = int(churn_cfg.get("list_unfollow_cap", 40))
         f_cap = int(follow_cfg.get("daily_cap", 80))
@@ -4053,7 +4064,7 @@ class Bot:
             if not (u_busy or t_busy or f_busy):
                 return "exhausted"   # every source capped or drained
             if not progressed:
-                return "exhausted"   # a full round did nothing — back off (keep_running re-checks)
+                return "exhausted"   # a full round did nothing - back off (keep_running re-checks)
         return "stopped"
 
     def _process_list_trim(self, page, cfg, max_actions=None) -> str:
@@ -4085,7 +4096,7 @@ class Bot:
         followed back, unfollow the rest (up to daily_unfollow_cap).
 
         max_actions caps how many accounts are touched this call (for interleaving)
-        — 'cap' is returned when that batch limit is hit (more may remain),
+        - 'cap' is returned when that batch limit is hit (more may remain),
         'exhausted' only when nothing is left to review."""
         follow_cfg = cfg.get("follow", {}) or {}
         churn_cfg = follow_cfg.get("churn", {}) or {}
@@ -4138,7 +4149,7 @@ class Bot:
                 self.state.update(phase_detail=f"churn cap {daily_unfollow_cap} reached")
                 return "cap"
             if max_actions is not None and attempts >= max_actions:
-                return "cap"   # batch limit — more may remain, caller re-invokes
+                return "cap"   # batch limit - more may remain, caller re-invokes
             if not self._can_act("unfollows", cfg):
                 return "cap"   # per-DAY cap reached or outside active hours
             attempts += 1
@@ -4147,7 +4158,7 @@ class Bot:
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
 
             # Reciprocity check on the loaded profile before deciding.
-            self._step(u, "churn review — checking follow-back")
+            self._step(u, "churn review - checking follow-back")
             try:
                 page.goto(f"https://www.instagram.com/{u}/", wait_until="domcontentloaded")
                 self._jitter(2.0, 4.0)
@@ -4155,20 +4166,20 @@ class Bot:
                 pass
 
             # Measure reciprocity for per-source analytics regardless of the
-            # keep_back setting — the churn visit is the natural measurement point.
+            # keep_back setting - the churn visit is the natural measurement point.
             follows_back = self._follows_you(page)
             src = source_map.get(u, "")
 
             if keep_back and follows_back:
-                self._step(u, "followed back — keeping", "good")
+                self._step(u, "followed back - keeping", "good")
                 append_log(kept_log, f"{ts}\t{u}")
                 append_log(outcomes_log, f"{ts}\t{u}\t{src}\t1")
                 self.state.emit("follow_kept", {"timestamp": ts, "username": u})
-                self.state.update(last_message=f"@{u} followed back — kept")
+                self.state.update(last_message=f"@{u} followed back - kept")
                 self._jitter(1.0, 3.0)
                 continue
-            self._step(u, "no follow-back — unfollowing" if not follows_back
-                       else "followed back (keep off) — unfollowing")
+            self._step(u, "no follow-back - unfollowing" if not follows_back
+                       else "followed back (keep off) - unfollowing")
 
             try:
                 result = self._unfollow(page, u)
@@ -4181,7 +4192,7 @@ class Bot:
 
             if result == "ok" or result == "not_following" or result == "private_or_missing" \
                     or result.startswith("no_button_no_posts"):
-                # Either we unfollowed them, or there's nothing left to unfollow —
+                # Either we unfollowed them, or there's nothing left to unfollow -
                 # done either way, so record it and stop re-checking.
                 append_log(churn_log, f"{ts}\t{u}")
                 append_log(outcomes_log, f"{ts}\t{u}\t{src}\t{'1' if follows_back else '0'}")
@@ -4237,7 +4248,7 @@ class Bot:
 
     def _setup_context(self, context, browser_cfg):
         """Shared post-creation hardening: webdriver mask. (Image blocking is done
-        via a native Chromium launch flag instead of per-request routing — routing
+        via a native Chromium launch flag instead of per-request routing - routing
         every request through Python is too slow on the Pi and was causing header
         load timeouts.)"""
         try:
@@ -4252,7 +4263,7 @@ class Bot:
         Mirrors the three connection models: CDP (attach to a Chrome the user
         started with --remote-debugging-port; never closed), persistent profile
         (Pi-native login dir), or ephemeral browser + session.json. Does NOT log
-        in or warm up — the caller handles that."""
+        in or warm up - the caller handles that."""
         cdp_endpoint = browser_cfg.get("cdp_endpoint") or ""
         using_cdp = bool(cdp_endpoint)
         user_data_dir = browser_cfg.get("user_data_dir") or ""
@@ -4266,7 +4277,7 @@ class Bot:
             "--no-sandbox",   # required when running as a service on the Pi
             "--disable-gpu",  # headless Pi has no GPU/display; silences ANGLE/EGL errors
         ]
-        # Block images natively (no per-request Python overhead) — big speed/RAM win
+        # Block images natively (no per-request Python overhead) - big speed/RAM win
         # on the Pi. Only for launched browsers; a user-launched CDP Chrome must set
         # this flag itself. We need only header text/buttons/action-bar, not pixels.
         if browser_cfg.get("block_media", True):
@@ -4326,7 +4337,7 @@ class Bot:
             self._setup_context(context, browser_cfg)
             page = context.pages[0] if context.pages else context.new_page()
         else:
-            # Ephemeral browser + storage_state (session.json) — the
+            # Ephemeral browser + storage_state (session.json) - the
             # copy-session model.
             launch_kwargs = {"headless": browser_cfg["headless"], "args": launch_args}
             if browser_cfg.get("proxy"):
@@ -4394,7 +4405,7 @@ class Bot:
                 # The browser is brought up only while the bot is ACTIVELY working and
                 # fully torn down whenever it goes idle (warm-up wait, day-cap sleep,
                 # off-hours, between cycles). That frees the Pi entirely for the
-                # scraper during the bot's dead time — true mutual exclusion, so the
+                # scraper during the bot's dead time - true mutual exclusion, so the
                 # two Chromes never contend. conn holds the live handles.
                 conn = {"browser": None, "context": None, "page": None,
                         "cdp": False, "persistent": False, "ok": False}
@@ -4479,8 +4490,8 @@ class Bot:
                     srcs = (cfg.get("follow", {}) or {}).get("sources", {}) or {}
                     tags = [t for t in (eng_cfg0.get("reach_hashtags") or srcs.get("hashtags") or []) if t]
                     self.state.emit("log", {"level": "info" if tags else "error",
-                        "msg": (f"reach enabled (in-loop) — {len(tags)} hashtag(s) loaded" if tags
-                                else "reach is ON but NO hashtags configured — add some in Sources → Hashtags")})
+                        "msg": (f"reach enabled (in-loop) - {len(tags)} hashtag(s) loaded" if tags
+                                else "reach is ON but NO hashtags configured - add some in Sources → Hashtags")})
 
                 daily_loop = bool(behavior.get("daily_loop", False))
                 loop_hours = float(pacing.get("daily_loop_hours", 24))
@@ -4499,7 +4510,7 @@ class Bot:
                         disconnect(); self._set_acting(False)
                         self.state.update(
                             status="sleeping", current_target=None,
-                            phase_detail=f"outside active hours — resuming in ~{gate_secs / 3600:.1f}h",
+                            phase_detail=f"outside active hours - resuming in ~{gate_secs / 3600:.1f}h",
                             next_action_at=time.time() + gate_secs)
                         self._interruptible_sleep(gate_secs)
                         self.state.update(next_action_at=None)
@@ -4510,7 +4521,7 @@ class Bot:
                         gate_secs = self._seconds_until_tomorrow()
                         self.state.update(
                             status="sleeping", current_target=None,
-                            phase_detail=f"daily caps reached — resuming tomorrow (~{gate_secs / 3600:.1f}h)",
+                            phase_detail=f"daily caps reached - resuming tomorrow (~{gate_secs / 3600:.1f}h)",
                             next_action_at=time.time() + gate_secs)
                         self._interruptible_sleep(gate_secs)
                         self.state.update(next_action_at=None)
@@ -4525,15 +4536,26 @@ class Bot:
                         ready = self._pool_ready(day_cfg)
                         if ready < cap:
                             disconnect(); self._set_acting(False)
-                            self.state.update(
-                                status="sleeping", current_target=None,
-                                phase_detail=f"warming up — scraper filling the pool ({ready}/{cap})",
-                                next_action_at=None)
-                            self._interruptible_sleep(30)
+                            # Re-check the pool in short ticks so the number tracks the
+                            # scraper live; surface the scraper's phase so it's clear it's
+                            # working even while scraping (ready only climbs while vetting).
+                            for _ in range(6):   # ~30s, polled every 5s
+                                if self._stop_event.is_set():
+                                    break
+                                ready = self._pool_ready(day_cfg)
+                                if ready >= cap:
+                                    break
+                                sp = self._scraper_phase()
+                                self.state.update(
+                                    status="sleeping", current_target=None, next_action_at=None,
+                                    phase_detail=(f"warming up - pool {ready}/{cap} ready"
+                                                  + (f" (scraper: {sp})" if sp else
+                                                     " (scraper idle/off - start it?)")))
+                                self._interruptible_sleep(5)
                             continue
                         self._warmed = True
                         self.state.emit("log", {"level": "info",
-                            "msg": f"pool warmed up ({ready} ready ≥ {cap}) — starting"})
+                            "msg": f"pool warmed up ({ready} ready >= {cap}) - starting"})
 
                     # --- ACTIVE: bring the browser up, verify the session, then work ---
                     self._set_acting(True)   # scraper pauses + closes its Chrome
@@ -4545,7 +4567,7 @@ class Bot:
                                else "refresh session.json (run export_session.py)")
                         self.state.update(status="error", current_target=None,
                                           next_action_at=None,
-                                          error=f"Instagram session expired — {fix}.")
+                                          error=f"Instagram session expired - {fix}.")
                         break
                     # Lazy-load the following list for unfollow mode (needs the page).
                     if mode == "unfollow" and not following:
@@ -4588,18 +4610,18 @@ class Bot:
                     if outcome == "checkpoint":
                         self.state.update(
                             status="error", current_target=None, next_action_at=None,
-                            error="Instagram CHECKPOINT/challenge detected — STOPPED immediately. "
+                            error="Instagram CHECKPOINT/challenge detected - STOPPED immediately. "
                                   "Open Instagram on this account and clear the challenge "
                                   "(confirm it's you), then start again. Do NOT keep running.",
                         )
                         self.state.emit("log", {"level": "error",
-                            "msg": "checkpoint/challenge detected — hard stop (no retries)"})
+                            "msg": "checkpoint/challenge detected - hard stop (no retries)"})
                         append_event("checkpoint")
                         break
                     if outcome == "block":
                         self.state.update(
                             status="error", current_target=None, next_action_at=None,
-                            error="Action block suspected. Stopped — lower the daily caps and "
+                            error="Action block suspected. Stopped - lower the daily caps and "
                                   "start again later (after several hours).",
                         )
                         break
@@ -4611,18 +4633,18 @@ class Bot:
                         break  # one-shot mode: a single batch then stop
 
                     if keep_running:
-                        # Don't hard-stop when the pool is empty — sleep a short,
+                        # Don't hard-stop when the pool is empty - sleep a short,
                         # randomized interval and re-check. A background scraper
                         # service refills the pool; churn-unfollows keep maturing.
                         lo = float(day_behavior.get("idle_recheck_min", 15))
                         hi = float(day_behavior.get("idle_recheck_max", 30))
                         sleep_s = random.uniform(min(lo, hi), max(lo, hi)) * 60
-                        note = ("pool empty — waiting for fresh candidates"
-                                if outcome == "exhausted" else "cycle done — re-checking")
+                        note = ("pool empty - waiting for fresh candidates"
+                                if outcome == "exhausted" else "cycle done - re-checking")
                     else:
                         # Daily-loop: sleep ~loop_hours before the next batch.
                         sleep_s = loop_hours * 3600 * random.uniform(0.9, 1.1)
-                        note = ("list fully processed — re-checking"
+                        note = ("list fully processed - re-checking"
                                 if outcome == "exhausted" else "daily batch done")
 
                     wake = time.time() + sleep_s
@@ -4687,7 +4709,7 @@ class Bot:
             sources = (cfg.get("follow", {}) or {}).get("sources", {}) or {}
             if not ((sources.get("follower_profiles") or []) or (sources.get("liker_posts") or [])):
                 self.state.update(status="error",
-                                  error="No sources configured — add follower profiles or post URLs.")
+                                  error="No sources configured - add follower profiles or post URLs.")
                 return
 
             self.state.update(status="scraping", started_at=time.time(), error=None,
@@ -4703,7 +4725,7 @@ class Bot:
                            else "refresh session.json / log in" if not using_cdp
                            else "log into Instagram in the Chrome you're debugging")
                     self.state.update(status="error",
-                                      error=f"Not logged in — {fix}, then scrape again.")
+                                      error=f"Not logged in - {fix}, then scrape again.")
                     return
 
                 # Seed the account status bar before scraping so it's visible
@@ -4728,7 +4750,7 @@ class Bot:
                 self.state.update(
                     status="stopped" if self._stop_event.is_set() else "idle",
                     phase_detail=("stopped by user" if self._stop_event.is_set()
-                                  else f"scrape done — added {added} new candidate(s)"),
+                                  else f"scrape done - added {added} new candidate(s)"),
                     last_message=f"scraped {added} new candidate(s)",
                     next_action_at=None,
                 )
