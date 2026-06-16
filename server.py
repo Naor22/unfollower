@@ -3,6 +3,7 @@
 import asyncio
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -176,6 +177,7 @@ async def lifespan(app: FastAPI):
         env = dotenv_values(ENV_PATH) if ENV_PATH.exists() else {}
         if srv.get("autostart") and env.get("IG_USERNAME"):
             bot_instance.start()
+            _maybe_autostart_scraper()   # boot: bring the scraper up with the bot
     except Exception:
         pass
     yield
@@ -256,6 +258,7 @@ async def start_bot():
         raise HTTPException(400, "IG_USERNAME / IG_PASSWORD not set.")
     if not bot_instance.start():
         raise HTTPException(409, "Bot already running.")
+    _maybe_autostart_scraper()   # follow/churn + scraper.enabled → start it too
     return {"ok": True}
 
 
@@ -700,26 +703,87 @@ async def clear_log(payload: LogClear):
     return {"ok": True, "cleared": cleared, "pruned": pruned}
 
 
-# ---------- scraper service status ----------
+# ---------- scraper service (server-managed subprocess) ----------
+
+_scraper_proc = None   # subprocess.Popen handle for the server-managed scraper
+
+
+def _start_scraper_proc() -> bool:
+    """Launch the scraper service as a child process (same venv). No-op if one is
+    already alive (managed, orphaned after a server restart, or systemd) — the PID
+    file makes that check work across all three."""
+    global _scraper_proc
+    if bot.scraper_running():
+        return False
+    try:
+        _scraper_proc = subprocess.Popen(
+            [sys.executable, str(bot.ROOT / "scraper.py")],
+            cwd=str(bot.ROOT),
+            start_new_session=True,   # outlive a server restart; tracked via PID file
+        )
+        return True
+    except Exception:
+        _scraper_proc = None
+        return False
+
+
+def _stop_scraper_proc() -> bool:
+    """Gracefully stop the running scraper (it handles SIGTERM → clean shutdown)."""
+    global _scraper_proc
+    pid = bot.scraper_pid()
+    if not bot.scraper_running():
+        _scraper_proc = None
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+    _scraper_proc = None
+    return True
+
+
+def _maybe_autostart_scraper() -> None:
+    """Start the scraper alongside the bot when in follow/churn mode and enabled."""
+    try:
+        cfg = bot.load_config()
+        mode = (cfg.get("mode") or "").lower()
+        scr = cfg.get("scraper", {}) or {}
+        if scr.get("enabled") and mode in ("follow", "churn"):
+            _start_scraper_proc()
+    except Exception:
+        pass
+
 
 @app.get("/api/scraper")
 async def scraper_status():
-    """Status of the standalone scraper service (a separate process). Reads the
-    heartbeat/counts file it publishes and derives `running` from heartbeat
-    freshness (the service writes its status every pass / every few profiles)."""
+    """Status of the scraper service. `running` comes from the PID file's process
+    liveness (authoritative); the status file adds counts + last-update age."""
     import json as _json
+    running = bot.scraper_running()
     path = bot.SCRAPER_STATUS
-    if not path.exists():
-        return {"present": False, "running": False}
-    try:
-        data = _json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"present": False, "running": False}
-    ts = float(data.get("ts", 0) or 0)
-    data["present"] = True
-    data["age"] = int(time.time() - ts) if ts else None
-    data["running"] = bool(ts and (time.time() - ts) < 180)
+    data = {"present": False, "running": running}
+    if path.exists():
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            data["present"] = True
+        except Exception:
+            data = {"present": False}
+        ts = float(data.get("ts", 0) or 0)
+        data["age"] = int(time.time() - ts) if ts else None
+        data["running"] = running or bool(ts and (time.time() - ts) < 180)
     return data
+
+
+@app.post("/api/scraper/start")
+async def scraper_start():
+    started = _start_scraper_proc()
+    return {"ok": True, "started": started, "running": bot.scraper_running()}
+
+
+@app.post("/api/scraper/stop")
+async def scraper_stop():
+    stopped = _stop_scraper_proc()
+    return {"ok": True, "stopped": stopped, "running": bot.scraper_running()}
 
 
 # ---------- deploy (browser file upload) ----------

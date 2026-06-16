@@ -33,6 +33,7 @@ FOLLOW_CANDIDATES = DATA_DIR / "follow_candidates.json"
 DISCOVERED_SOURCES = DATA_DIR / "discovered_sources.json"
 ACCOUNT_STATS = DATA_DIR / "account_stats.json"
 SCRAPER_STATUS = DATA_DIR / "scraper_status.json"   # separate scraper service heartbeat/counts
+SCRAPER_PID = DATA_DIR / "scraper.pid"              # so the server can track/stop the scraper
 ACTIVITY_LOG = DATA_DIR / "activity.json"   # shared live-activity feed (all devices)
 ACTIVITY_MAX = 1000                          # ring buffer cap (auto-cleanup)
 
@@ -312,6 +313,28 @@ def write_following_cache(usernames: list[str]) -> None:
     """Overwrite the following cache (kept oldest-first)."""
     FOLLOWING_CACHE.parent.mkdir(exist_ok=True)
     FOLLOWING_CACHE.write_text(json.dumps(usernames, indent=2), encoding="utf-8")
+
+
+def scraper_pid() -> Optional[int]:
+    """PID written by a running scraper service (run_scraper), or None."""
+    try:
+        return int(SCRAPER_PID.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def scraper_running() -> bool:
+    """Is a scraper service alive? Checks the PID file's process liveness, so it
+    works whether the scraper was launched by the server (subprocess), left
+    orphaned after a server restart, or run by systemd."""
+    pid = scraper_pid()
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)   # signal 0 = liveness probe (no signal sent)
+        return True
+    except Exception:
+        return False
 
 
 # ---------- follow / churn file helpers ----------
@@ -2150,6 +2173,10 @@ class Bot:
             if scr.get("executable_path"):
                 browser_cfg["executable_path"] = scr["executable_path"]
             DATA_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                SCRAPER_PID.write_text(str(os.getpid()), encoding="utf-8")
+            except Exception:
+                pass
             self._write_scraper_status(phase="starting")
 
             with sync_playwright() as p:
@@ -2190,6 +2217,11 @@ class Bot:
             self._write_scraper_status(error=str(e))
         finally:
             self._write_scraper_status(phase="stopped")
+            try:
+                if scraper_pid() == os.getpid():
+                    SCRAPER_PID.unlink()
+            except Exception:
+                pass
 
     def _adjust_following(self, delta: int) -> None:
         """Nudge the live following count by ±1 after a real follow/unfollow, so the

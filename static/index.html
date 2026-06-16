@@ -1135,7 +1135,11 @@
               <div style="flex:1"></div>
               <span class="pill" x-show="scraper" :style="scraper && scraper.running ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--danger-bg);color:var(--danger)'" x-text="scraper ? (scraper.running ? 'running' : 'down') : ''"></span>
             </div>
-            <p class="hint" style="margin-bottom:12px;">Scrapes sources + filters candidates on a 2nd Chrome (burner account), publishing a cleaned pool for the bot. Browser-only, isolated from your main account.</p>
+            <p class="hint" style="margin-bottom:12px;">Scrapes sources + filters candidates on a 2nd Chrome (burner account), publishing a cleaned pool for the bot. Browser-only, isolated from your main account. Auto-starts with the bot in follow/churn mode.</p>
+            <div class="btn-row" style="margin-bottom:14px;">
+              <button class="primary" @click="scraperControl('start')" :disabled="scraperBusy || (scraper && scraper.running)">Start scraper</button>
+              <button class="ghost" @click="scraperControl('stop')" :disabled="scraperBusy || !(scraper && scraper.running)">Stop scraper</button>
+            </div>
             <template x-if="scraper && scraper.present">
               <div>
                 <div class="reach-stats">
@@ -1531,6 +1535,7 @@
         discoveryNegativeText: '',
         system: null,
         scraper: null,
+        scraperBusy: false,
         cpuHist: [],
         memHist: [],
         tempHist: [],
@@ -1601,6 +1606,16 @@
 
         async loadScraper() {
           try { this.scraper = await this.fetch('/api/scraper'); } catch (e) {}
+        },
+
+        async scraperControl(action) {
+          this.scraperBusy = true;
+          try {
+            const j = await this.fetch('/api/scraper/' + action, { method: 'POST' });
+            this.showToast('Scraper ' + (j.running ? 'running' : 'stopped'), 'success');
+            await this.loadScraper();
+          } catch (e) { this.showToast(e.message, 'error'); }
+          finally { this.scraperBusy = false; }
         },
         stopSysPolling() {
           if (this._sysTimer) { clearInterval(this._sysTimer); this._sysTimer = null; }

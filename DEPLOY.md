@@ -216,26 +216,24 @@ python scraper_login.py
 # enter the 2FA code if prompted; on success the burner profile is saved
 ```
 
-**5. Install + start the service:**
-```bash
-sudo cp /home/naor223/unfollower/deploy/unfollower-scraper.service /etc/systemd/system/
-# edit User/paths if not naor223:/home/naor223/unfollower
-sudo systemctl daemon-reload
-sudo systemctl enable --now unfollower-scraper
-sudo systemctl status unfollower-scraper      # active (running)
-journalctl -u unfollower-scraper -f           # live logs
-```
+**5. Run it from the dashboard.** The server manages the scraper as a child process,
+so there's **nothing to install** — open **System → Scraper service** and click
+**Start scraper**. It also **auto-starts with the bot** whenever you start in
+follow/churn mode (and on boot if `server.autostart` is on). Use **Stop scraper** to
+halt it. Live status (running, pool/ready/checked/rejected) shows on the same card.
 
-Watch live status in the dashboard under **System → Scraper service** (it reads the
-heartbeat the service writes to `data/scraper_status.json`). The scraper writes
-`data/filter_checked.log` (kept) and `data/filter_rejected.log` (filtered out); the
-latter feeds the core bot's done-set so it never visits pruned junk.
+The scraper writes `data/filter_checked.log` (kept) and `data/filter_rejected.log`
+(filtered out); the latter feeds the core bot's done-set, and with
+`follow.external_scraper: true` the bot follows **only** checked accounts. Code ships
+via the dashboard's **Deploy latest** button; since the scraper is a child of the
+server, restarting the main service (the Deploy button does this) also recycles it.
 
-> Both services live in the same git repo, so code ships via the dashboard's
-> **Deploy latest** button. After the first install, restart the scraper too if a
-> deploy changed `scraper.py`/`bot.py`:
-> `sudo systemctl restart unfollower-scraper` (or add it to a sudoers line like the
-> main unit if you want a button for it).
+> **Optional — run it under systemd instead** (if you'd rather it be independent of
+> the server process): `sudo cp deploy/unfollower-scraper.service /etc/systemd/system/`,
+> then `sudo systemctl enable --now unfollower-scraper`. **Don't do both** — the
+> dashboard buttons and a systemd unit would launch two scrapers fighting over the
+> burner profile. If you previously enabled the unit and now want the dashboard model,
+> disable it first: `sudo systemctl disable --now unfollower-scraper`.
 
 ## 9. Remote access with Tailscale
 
