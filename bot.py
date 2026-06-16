@@ -35,6 +35,7 @@ DISCOVERED_SOURCES = DATA_DIR / "discovered_sources.json"
 ACCOUNT_STATS = DATA_DIR / "account_stats.json"
 SCRAPER_STATUS = DATA_DIR / "scraper_status.json"   # separate scraper service heartbeat/counts
 SCRAPER_PID = DATA_DIR / "scraper.pid"              # so the server can track/stop the scraper
+DAILY_COUNTS = DATA_DIR / "daily_counts.json"       # real per-CALENDAR-DAY action ledger (ban safety)
 ACTIVITY_LOG = DATA_DIR / "activity.json"   # shared live-activity feed (all devices)
 ACTIVITY_MAX = 1000                          # ring buffer cap (auto-cleanup)
 
@@ -73,6 +74,10 @@ class BotState:
     # periodically re-synced). None until the first fetch.
     account_followers: Optional[int] = None
     account_following: Optional[int] = None
+    # today's per-calendar-day action totals (ban-safety ledger)
+    day_follows: int = 0
+    day_unfollows: int = 0
+    day_likes: int = 0
 
 
 class StateManager:
@@ -1415,6 +1420,31 @@ class Bot:
         except Exception:
             return False
 
+    # A checkpoint/challenge/suspension interstitial — the moment to STOP, not
+    # retry (retrying during an account review hammers IG and deepens the flag).
+    _CHECKPOINT_TEXT_RE = re.compile(
+        r"we suspended your account|we disabled your account|"
+        r"your account has been (disabled|suspended)|confirm it'?s you|"
+        r"help us confirm|verify your account|suspicious (login|activity)|"
+        r"unusual activity|we detected unusual",
+        re.I,
+    )
+
+    def _checkpoint_detected(self, page) -> bool:
+        """True if IG is showing a checkpoint/challenge/suspension screen."""
+        try:
+            url = (page.url or "").lower()
+        except Exception:
+            url = ""
+        if any(k in url for k in ("/challenge", "/accounts/suspended", "/accounts/disabled")):
+            return True
+        try:
+            txt = page.evaluate(
+                "() => (document.body ? document.body.innerText : '').slice(0, 4000)")
+        except Exception:
+            txt = ""
+        return bool(self._CHECKPOINT_TEXT_RE.search(txt or ""))
+
     # IG's "this account is gone" interstitial. Distinguishes a genuinely
     # deleted/disabled/blocked profile (permanent skip) from a page that simply
     # hasn't finished loading (transient — should be retried, not skipped).
@@ -1478,7 +1508,7 @@ class Bot:
 
     # Terminal outcomes: no point retrying or trying another surface. (rate_limited
     # is handled out of band by _process_day's cooldown, so it's terminal here too.)
-    _TERMINAL = ("ok", "not_following", "no_button_no_posts", "private_or_missing")
+    _TERMINAL = ("ok", "not_following", "no_button_no_posts", "private_or_missing", "checkpoint")
 
     def _step(self, username: str, label: str, tone: str = "neutral",
               key: Optional[str] = None) -> None:
@@ -1657,6 +1687,8 @@ class Bot:
         except Exception:
             self._step(target, "page load failed — retry", "bad")
             return "profile_not_ready"
+        if self._checkpoint_detected(page):
+            return "checkpoint"
 
         # Wait for the profile header to actually render — IG loads it AFTER
         # domcontentloaded, so checking immediately (the old behaviour) reported a
@@ -2580,6 +2612,8 @@ class Bot:
         except Exception:
             self._step(target, "profile unavailable", "bad")
             return "unavailable"
+        if self._checkpoint_detected(page):
+            return "checkpoint"
         self._jitter(1.0, 2.5) if lean else self._jitter(2.0, 4.5)
         self._random_mouse(page)
 
@@ -2902,6 +2936,157 @@ class Bot:
         self._story_next = 1
         self.state.update(reach_scraped=0, reach_liked=0, reach_pool=0)
 
+    # ---- per-CALENDAR-DAY action ledger + active-hours (ban safety) ----
+    # Caps in config are now true per-day totals (persisted across restarts /
+    # keep_running re-runs), randomized ±jitter daily, so the account can't blow
+    # past a safe daily volume the way per-batch caps allowed.
+
+    def _roll_daily_caps(self, cfg) -> dict:
+        follow_cfg = cfg.get("follow", {}) or {}
+        churn_cfg = follow_cfg.get("churn", {}) or {}
+        eng = follow_cfg.get("engagement", {}) or {}
+        pacing = cfg.get("pacing", {}) or {}
+        jit = float(pacing.get("daily_volume_jitter", 0.3))
+
+        def r(base):
+            base = float(base or 0)
+            if base <= 0:
+                return 0
+            return max(1, int(round(base * random.uniform(1 - jit, 1 + jit))))
+
+        return {
+            "follows": r(follow_cfg.get("daily_cap", 30)),
+            "unfollows": r(churn_cfg.get("daily_unfollow_cap", 30)),
+            "likes": r(eng.get("story_reach_daily_cap", 50)),
+            "combined": r(pacing.get("daily_action_cap", 0)),   # 0 = no combined cap
+        }
+
+    def _ensure_ledger(self, cfg) -> dict:
+        today = time.strftime("%Y-%m-%d")
+        L = getattr(self, "_ledger", None)
+        if L is None:
+            try:
+                L = json.loads(DAILY_COUNTS.read_text(encoding="utf-8"))
+            except Exception:
+                L = {}
+        if L.get("date") != today:
+            L = {"date": today, "follows": 0, "unfollows": 0, "likes": 0,
+                 "stories": 0, "soft_blocks": 0, "last_block_ts": 0,
+                 "caps": self._roll_daily_caps(cfg)}
+            self._ledger = L
+            self._save_ledger()
+        else:
+            L.setdefault("caps", self._roll_daily_caps(cfg))
+            self._ledger = L
+        return L
+
+    def _save_ledger(self) -> None:
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = DAILY_COUNTS.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._ledger, indent=2), encoding="utf-8")
+            os.replace(tmp, DAILY_COUNTS)
+        except Exception:
+            pass
+
+    def _day_room(self, kind, cfg) -> int:
+        """Remaining room today for a kind (follows/unfollows/likes), honoring the
+        per-kind cap AND the combined follow+unfollow cap. Large = effectively no cap."""
+        L = self._ensure_ledger(cfg)
+        caps = L.get("caps", {})
+        room = 10**9
+        cap = caps.get(kind)
+        if cap:
+            room = min(room, cap - int(L.get(kind, 0)))
+        if kind in ("follows", "unfollows"):
+            comb = caps.get("combined")
+            if comb:
+                used = int(L.get("follows", 0)) + int(L.get("unfollows", 0))
+                room = min(room, comb - used)
+        return room
+
+    def _day_record(self, kind, cfg, n=1) -> None:
+        L = self._ensure_ledger(cfg)
+        L[kind] = int(L.get(kind, 0)) + n
+        self._save_ledger()
+        self.state.update(day_follows=L.get("follows", 0),
+                          day_unfollows=L.get("unfollows", 0),
+                          day_likes=L.get("likes", 0))
+
+    def _record_soft_block(self, cfg) -> int:
+        L = self._ensure_ledger(cfg)
+        L["soft_blocks"] = int(L.get("soft_blocks", 0)) + 1
+        L["last_block_ts"] = time.time()
+        self._save_ledger()
+        return int(L["soft_blocks"])
+
+    def _active_window(self, cfg):
+        pacing = cfg.get("pacing", {}) or {}
+        if not pacing.get("active_hours_enabled", False):
+            return None
+        return (int(pacing.get("active_hours_start", 8)),
+                int(pacing.get("active_hours_end", 24)))
+
+    def _in_active_hours(self, cfg) -> bool:
+        win = self._active_window(cfg)
+        if not win:
+            return True
+        start, end = win
+        hour = time.localtime().tm_hour
+        if start <= end:
+            return start <= hour < end
+        return hour >= start or hour < end   # window wraps midnight
+
+    def _seconds_until_active(self, cfg) -> float:
+        """0 if in the active window, else seconds until it next opens."""
+        if self._in_active_hours(cfg):
+            return 0.0
+        win = self._active_window(cfg)
+        if not win:
+            return 0.0
+        start = win[0]
+        now = time.localtime()
+        secs_now = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
+        start_secs = start * 3600
+        if start_secs > secs_now:
+            return float(start_secs - secs_now)
+        return float((86400 - secs_now) + start_secs)
+
+    def _seconds_until_tomorrow(self) -> float:
+        now = time.localtime()
+        return float(86400 - (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec) + 5)
+
+    def _can_act(self, kind, cfg) -> bool:
+        """Gate every real action: must be inside active hours AND under today's cap."""
+        return self._in_active_hours(cfg) and self._day_room(kind, cfg) > 0
+
+    def _handle_soft_block(self, cfg) -> str:
+        """On an IG soft-block: record it (persisted), back off with a long,
+        exponential cooldown, and stop for the day after too many. IG action-blocks
+        last hours-to-days, so resuming after 15 min just re-arms the block.
+        Returns 'block' (stop the run) or 'cooldown' (backed off, resume)."""
+        pacing = cfg.get("pacing", {}) or {}
+        n = self._record_soft_block(cfg)
+        if n >= int(pacing.get("soft_block_max_per_day", 2)):
+            self.state.update(phase_detail=f"{n} soft-blocks today — stopping for the day")
+            return "block"
+        lo = float(pacing.get("rate_limit_cooldown_min_seconds", 3600))
+        hi = float(pacing.get("rate_limit_cooldown_max_seconds", 7200))
+        cooldown = random.uniform(lo, hi) * (2 ** (n - 1))   # exponential per hit
+        self.state.update(phase_detail=f"soft block #{n} — cooling down {cooldown / 3600:.1f}h")
+        self._interruptible_sleep(cooldown)
+        return "cooldown"
+
+    def _day_capped_for_mode(self, cfg, mode) -> bool:
+        if mode == "follow":
+            return self._day_room("follows", cfg) <= 0
+        if mode == "churn":
+            return (self._day_room("follows", cfg) <= 0
+                    and self._day_room("unfollows", cfg) <= 0)
+        if mode == "unfollow":
+            return self._day_room("unfollows", cfg) <= 0
+        return False
+
     def _do_reach(self, page, u: str) -> str:
         """Do one marketing 'reach' touch on a pool member per `engagement.reach_mode`
         ('likes' | 'story' | 'both'): like a recent post and/or view their story.
@@ -3101,6 +3286,7 @@ class Bot:
             self._step(disp, "liked the post", "good", key=pkey)
             parts.append("liked post")
             self.state.update(reach_liked=self.state.snapshot().get("reach_liked", 0) + 1)
+            self._day_record("likes", load_config())
         elif rate_limited:
             self._step(disp, "rate-limited", "bad", key=pkey)
         else:
@@ -3171,8 +3357,12 @@ class Bot:
             self._story_worker_active = False
             self.state.emit("log", {"level": "info",
                                     "msg": "story-reach: background worker gone — using interleaved mode"})
-        eng = (load_config().get("follow", {}) or {}).get("engagement", {}) or {}
+        cfg = load_config()
+        eng = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
         if not eng.get("story_reach_enabled", False):
+            return
+        # Respect the per-day like cap + active hours (reach is mostly likes).
+        if not self._can_act("likes", cfg):
             return
         # Fire after a RANDOM number of actions (not every single one) so a like
         # doesn't follow every unfollow like clockwork — looks less robotic.
@@ -3271,7 +3461,8 @@ class Bot:
     # --- run loop ---
 
     def _process_day(self, page, following, pacing, unfollowed_log, failed_log,
-                     skipped_log, cap=None, set_gauge=True, max_actions=None) -> str:
+                     skipped_log, cap=None, set_gauge=True, max_actions=None,
+                     cfg=None) -> str:
         """Run one daily batch of unfollows.
 
         Re-reads the whitelist and the done set (unfollowed + skipped) fresh, so
@@ -3284,6 +3475,8 @@ class Bot:
         this can run as a churn add-on (see `_process_list_trim`) without
         clobbering the churn progress display."""
         cap = pacing["daily_cap"] if cap is None else int(cap)
+        if cfg is None:
+            cfg = load_config()
         whitelist = load_whitelist()
         done_set = {row["username"].lower() for row in read_unfollowed_log()}
         done_set |= {row["username"].lower() for row in read_skipped_log()}
@@ -3316,6 +3509,8 @@ class Bot:
                 return "cap"
             if max_actions is not None and attempts >= max_actions:
                 return "cap"   # batch limit — more may remain
+            if not self._can_act("unfollows", cfg):
+                return "cap"   # per-DAY cap reached or outside active hours
             attempts += 1
 
             if set_gauge:
@@ -3329,6 +3524,8 @@ class Bot:
                 result = "error"
                 self.state.emit("log", {"level": "error", "msg": f"exception on {target}: {e}"})
 
+            if result == "checkpoint":
+                return "checkpoint"
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             if result == "ok":
                 append_log(unfollowed_log, f"{ts}\t{target}")
@@ -3336,6 +3533,7 @@ class Bot:
                 self.state.update(unfollowed_count=new_count, last_message=f"unfollowed @{target}")
                 self.state.emit("unfollowed", {"timestamp": ts, "username": target, "note": ""})
                 processed += 1
+                self._day_record("unfollows", cfg)
                 consecutive_errors = 0
                 self._adjust_following(-1)
                 self._tick_resync(page)
@@ -3366,19 +3564,12 @@ class Bot:
                 # so we don't burn the whole window against a wall.
                 append_log(failed_log, f"{ts}\t{target}\t{result}")
                 new_failed = self.state.snapshot()["failed_count"] + 1
-                rate_limit_hits += 1
                 consecutive_errors = 0  # not a selector failure — handled separately
                 self.state.update(failed_count=new_failed,
                                   last_message=f"rate-limited @{target} (soft block)")
                 self.state.emit("failed", {"timestamp": ts, "username": target, "reason": "rate_limited"})
-                if rate_limit_hits >= pacing.get("rate_limit_max_hits", 3):
+                if self._handle_soft_block(cfg) == "block":
                     return "block"
-                cooldown = random.uniform(
-                    pacing.get("rate_limit_cooldown_min_seconds", 900),
-                    pacing.get("rate_limit_cooldown_max_seconds", 1800),
-                )
-                self.state.update(phase_detail=f"soft block — cooling down {cooldown / 60:.0f}m")
-                self._interruptible_sleep(cooldown)
                 if self._stop_event.is_set():
                     return "stopped"
                 continue
@@ -3485,6 +3676,8 @@ class Bot:
                 return "cap"
             if max_actions is not None and attempts >= max_actions:
                 return "cap"   # batch limit — more may remain, caller re-invokes
+            if not self._can_act("follows", cfg):
+                return "cap"   # per-DAY cap reached or outside active hours
 
             done_set = self._follow_done_set(whitelist, my_username)
             candidates = read_follow_candidates()
@@ -3532,6 +3725,8 @@ class Bot:
                 result = "error"
                 self.state.emit("log", {"level": "error", "msg": f"exception on {target}: {e}"})
 
+            if result == "checkpoint":
+                return "checkpoint"
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             if result == "ok":
                 append_log(followed_log, f"{ts}\t{target}\t{source}")
@@ -3539,6 +3734,7 @@ class Bot:
                 self.state.update(followed_count=new_count, last_message=f"followed @{target}")
                 self.state.emit("followed", {"timestamp": ts, "username": target, "source": source})
                 processed += 1
+                self._day_record("follows", cfg)
                 consecutive_errors = 0
                 self._adjust_following(+1)
                 self._tick_resync(page)
@@ -3561,19 +3757,12 @@ class Bot:
             elif result.startswith("rate_limited"):
                 append_log(failed_log, f"{ts}\t{target}\t{result}")
                 new_failed = self.state.snapshot()["follow_failed_count"] + 1
-                rate_limit_hits += 1
                 consecutive_errors = 0
                 self.state.update(follow_failed_count=new_failed,
                                   last_message=f"rate-limited @{target} (soft block)")
                 self.state.emit("follow_failed", {"timestamp": ts, "username": target, "reason": "rate_limited"})
-                if rate_limit_hits >= pacing.get("rate_limit_max_hits", 3):
+                if self._handle_soft_block(cfg) == "block":
                     return "block"
-                cooldown = random.uniform(
-                    pacing.get("rate_limit_cooldown_min_seconds", 900),
-                    pacing.get("rate_limit_cooldown_max_seconds", 1800),
-                )
-                self.state.update(phase_detail=f"soft block — cooling down {cooldown / 60:.0f}m")
-                self._interruptible_sleep(cooldown)
                 if self._stop_event.is_set():
                     return "stopped"
                 continue
@@ -3647,7 +3836,7 @@ class Bot:
             # --- unfollow batch: aged-review first ---
             if not u_dead and u_used < u_cap:
                 out = self._process_churn_unfollows(page, cfg, max_actions=unf_per)
-                if out in ("stopped", "block"):
+                if out in ("stopped", "block", "checkpoint"):
                     return out
                 u_used += unf_per
                 u_dead = (out == "exhausted")
@@ -3655,7 +3844,7 @@ class Bot:
             # --- unfollow batch: list-trim (shrink the existing following list) ---
             if not t_dead and t_used < t_cap:
                 out = self._process_list_trim(page, cfg, max_actions=unf_per)
-                if out in ("stopped", "block"):
+                if out in ("stopped", "block", "checkpoint"):
                     return out
                 t_used += unf_per
                 t_dead = (out == "exhausted")
@@ -3663,7 +3852,7 @@ class Bot:
             # --- follow batch ---
             if not f_dead and f_used < f_cap:
                 out = self._process_follow_day(page, cfg, max_actions=fol_per)
-                if out in ("stopped", "block"):
+                if out in ("stopped", "block", "checkpoint"):
                     return out
                 f_used += fol_per
                 f_dead = (out == "exhausted")
@@ -3699,7 +3888,7 @@ class Bot:
             _log_path("unfollowed_log", "data/unfollowed.log"),
             _log_path("failed_log", "data/failed.log"),
             _log_path("skipped_log", "data/skipped.log"),
-            cap=cap, set_gauge=False, max_actions=max_actions,
+            cap=cap, set_gauge=False, max_actions=max_actions, cfg=cfg,
         )
 
     def _process_churn_unfollows(self, page, cfg, max_actions=None) -> str:
@@ -3761,6 +3950,8 @@ class Bot:
                 return "cap"
             if max_actions is not None and attempts >= max_actions:
                 return "cap"   # batch limit — more may remain, caller re-invokes
+            if not self._can_act("unfollows", cfg):
+                return "cap"   # per-DAY cap reached or outside active hours
             attempts += 1
 
             self.state.update(current_target=u)
@@ -3796,6 +3987,9 @@ class Bot:
                 result = "error"
                 self.state.emit("log", {"level": "error", "msg": f"churn exception on {u}: {e}"})
 
+            if result == "checkpoint":
+                return "checkpoint"
+
             if result == "ok" or result == "not_following" or result == "private_or_missing" \
                     or result.startswith("no_button_no_posts"):
                 # Either we unfollowed them, or there's nothing left to unfollow —
@@ -3808,6 +4002,7 @@ class Bot:
                     self.state.update(churn_unfollowed_count=new_count,
                                       last_message=f"churned @{u} (didn't follow back)")
                     processed += 1
+                    self._day_record("unfollows", cfg)
                     consecutive_errors = 0
                     self._adjust_following(-1)
                     self._tick_resync(page)
@@ -3827,17 +4022,10 @@ class Bot:
                                       last_message=f"@{u} already not followed (resolved)")
                     self._jitter(1.0, 3.0)
             elif result.startswith("rate_limited"):
-                rate_limit_hits += 1
                 consecutive_errors = 0
                 self.state.update(last_message=f"rate-limited churning @{u} (soft block)")
-                if rate_limit_hits >= pacing.get("rate_limit_max_hits", 3):
+                if self._handle_soft_block(cfg) == "block":
                     return "block"
-                cooldown = random.uniform(
-                    pacing.get("rate_limit_cooldown_min_seconds", 900),
-                    pacing.get("rate_limit_cooldown_max_seconds", 1800),
-                )
-                self.state.update(phase_detail=f"soft block — cooling down {cooldown / 60:.0f}m")
-                self._interruptible_sleep(cooldown)
                 if self._stop_event.is_set():
                     return "stopped"
             else:
@@ -3854,6 +4042,36 @@ class Bot:
         return "exhausted"
 
     # --- browser connection (shared by the run loop and one-shot scrapes) ---
+
+    _WEBDRIVER_MASK = "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+
+    def _route_block_heavy(self, route):
+        """Abort image/media/font requests to slash page-load time + Chrome RAM
+        (IG pages are image/video-heavy; we only need header text, buttons, and the
+        action bar). Likes/stories/counts don't need pixels, so this is safe. Keeps
+        document/script/xhr/stylesheet so the SPA still works."""
+        try:
+            if route.request.resource_type in ("image", "media", "font"):
+                return route.abort()
+            return route.continue_()
+        except Exception:
+            try:
+                return route.continue_()
+            except Exception:
+                return None
+
+    def _setup_context(self, context, browser_cfg):
+        """Shared post-creation hardening: webdriver mask + (optional) heavy-request
+        blocking. Applied to every connection model."""
+        try:
+            context.add_init_script(self._WEBDRIVER_MASK)
+        except Exception:
+            pass
+        if browser_cfg.get("block_media", True):
+            try:
+                context.route("**/*", self._route_block_heavy)
+            except Exception:
+                pass
 
     def _connect(self, p, browser_cfg):
         """Open/attach a browser per config and return
@@ -3903,6 +4121,9 @@ class Bot:
                     break
             if page is None:
                 page = context.new_page()
+            # CDP Chrome is user-launched; we can't set proxy/UA here, but we can
+            # still add the webdriver mask + heavy-request blocking on its context.
+            self._setup_context(context, browser_cfg)
         elif using_persistent:
             # Permanent Pi-native login: a persistent profile dir that
             # keeps you logged in across runs/reboots. Log in ONCE on the
@@ -3919,16 +4140,20 @@ class Bot:
                 "locale": browser_cfg["locale"],
                 "user_agent": browser_cfg["user_agent"],
             }
+            if browser_cfg.get("timezone_id"):
+                pkwargs["timezone_id"] = browser_cfg["timezone_id"]
+            if browser_cfg.get("proxy"):
+                pkwargs["proxy"] = {"server": browser_cfg["proxy"]}
             _browser_binary(pkwargs)
             context = p.chromium.launch_persistent_context(**pkwargs)
-            context.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-            )
+            self._setup_context(context, browser_cfg)
             page = context.pages[0] if context.pages else context.new_page()
         else:
             # Ephemeral browser + storage_state (session.json) — the
             # copy-session model.
             launch_kwargs = {"headless": browser_cfg["headless"], "args": launch_args}
+            if browser_cfg.get("proxy"):
+                launch_kwargs["proxy"] = {"server": browser_cfg["proxy"]}
             _browser_binary(launch_kwargs)
             browser = p.chromium.launch(**launch_kwargs)
             ctx_args = {
@@ -3939,12 +4164,12 @@ class Bot:
                 "locale": browser_cfg["locale"],
                 "user_agent": browser_cfg["user_agent"],
             }
+            if browser_cfg.get("timezone_id"):
+                ctx_args["timezone_id"] = browser_cfg["timezone_id"]
             if SESSION_PATH.exists():
                 ctx_args["storage_state"] = str(SESSION_PATH)
             context = browser.new_context(**ctx_args)
-            context.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-            )
+            self._setup_context(context, browser_cfg)
             page = context.new_page()
 
         return browser, context, page, using_cdp, using_persistent
@@ -4123,6 +4348,28 @@ class Bot:
                         )
                         break
 
+                    # --- ban-safety gates (before doing any work) ---
+                    # Outside the configured active hours → sleep until the window opens.
+                    gate_secs = self._seconds_until_active(day_cfg)
+                    if gate_secs > 0:
+                        self.state.update(
+                            status="sleeping", current_target=None,
+                            phase_detail=f"outside active hours — resuming in ~{gate_secs / 3600:.1f}h",
+                            next_action_at=time.time() + gate_secs)
+                        self._interruptible_sleep(gate_secs)
+                        self.state.update(next_action_at=None)
+                        continue
+                    # Hit today's caps → sleep to the next local day (caps re-roll then).
+                    if self._day_capped_for_mode(day_cfg, mode):
+                        gate_secs = self._seconds_until_tomorrow()
+                        self.state.update(
+                            status="sleeping", current_target=None,
+                            phase_detail=f"daily caps reached — resuming tomorrow (~{gate_secs / 3600:.1f}h)",
+                            next_action_at=time.time() + gate_secs)
+                        self._interruptible_sleep(gate_secs)
+                        self.state.update(next_action_at=None)
+                        continue
+
                     # Seed/re-sync our own follower & following counts for the
                     # status bar at the start of every batch (per-action ±1 keeps
                     # it live between these full fetches).
@@ -4155,11 +4402,21 @@ class Bot:
 
                     if outcome == "stopped":
                         break
+                    if outcome == "checkpoint":
+                        self.state.update(
+                            status="error", current_target=None, next_action_at=None,
+                            error="Instagram CHECKPOINT/challenge detected — STOPPED immediately. "
+                                  "Open Instagram on this account and clear the challenge "
+                                  "(confirm it's you), then start again. Do NOT keep running.",
+                        )
+                        self.state.emit("log", {"level": "error",
+                            "msg": "checkpoint/challenge detected — hard stop (no retries)"})
+                        break
                     if outcome == "block":
                         self.state.update(
                             status="error", current_target=None, next_action_at=None,
-                            error="Action block suspected (5 consecutive failures). "
-                                  "Stopped — lower the daily cap and start again later.",
+                            error="Action block suspected. Stopped — lower the daily caps and "
+                                  "start again later (after several hours).",
                         )
                         break
                     day_behavior = day_cfg.get("behavior", {}) or {}

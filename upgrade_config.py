@@ -56,6 +56,17 @@ DEFAULT_BEHAVIOR = {
     "idle_recheck_max": 30,
 }
 
+DEFAULT_PACING = {
+    # per-calendar-day action safety (caps become true daily totals)
+    "daily_volume_jitter": 0.3,
+    "daily_action_cap": 0,          # combined follows+unfollows/day (0 = off)
+    "soft_block_max_per_day": 2,
+    # active-hours (local tz) — only act during human hours
+    "active_hours_enabled": True,
+    "active_hours_start": 8,
+    "active_hours_end": 24,
+}
+
 DEFAULT_SCRAPER = {
     "enabled": False,
     # Persistent-profile model (like the main bot): cdp_endpoint "" + user_data_dir,
@@ -99,6 +110,9 @@ def main() -> int:
 
     cfg.setdefault("behavior", {})
     added += _deep_fill(cfg["behavior"], DEFAULT_BEHAVIOR)
+
+    cfg.setdefault("pacing", {})
+    added += _deep_fill(cfg["pacing"], DEFAULT_PACING)
 
     cfg.setdefault("scraper", {})
     added += _deep_fill(cfg["scraper"], DEFAULT_SCRAPER)
