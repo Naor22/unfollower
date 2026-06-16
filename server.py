@@ -170,6 +170,16 @@ async def lifespan(app: FastAPI):
                                  account_following=stats.get("following"))
     except Exception:
         pass
+    # Seed today's per-day action counts (if any) so the bar shows them while idle.
+    try:
+        import json as _json
+        L = _json.loads(bot.DAILY_COUNTS.read_text(encoding="utf-8"))
+        if L.get("date") == time.strftime("%Y-%m-%d"):
+            state_manager.update(day_follows=L.get("follows", 0),
+                                 day_unfollows=L.get("unfollows", 0),
+                                 day_likes=L.get("likes", 0))
+    except Exception:
+        pass
     # Pi mode: auto-start the bot on launch so it resumes after a reboot
     # (combined with behavior.daily_loop this runs unattended forever).
     try:

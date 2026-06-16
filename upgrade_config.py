@@ -74,11 +74,20 @@ DEFAULT_SCRAPER = {
     "cdp_endpoint": "",
     "user_data_dir": "data/scraper-profile",
     "idle_seconds": 600,
-    "min_delay": 1.5,
-    "max_delay": 4,
+    "min_delay": 4,
+    "max_delay": 10,
     "long_break_every": 40,
     "long_break_min": 60,
     "long_break_max": 180,
+    "browser": {   # distinct fingerprint from the main account (anti-association)
+        "user_agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),
+        "viewport_width": 1440,
+        "viewport_height": 900,
+        "locale": "en-US",
+        "timezone_id": "",
+        "proxy": "",   # http://user:pass@host:port — route the burner via a different IP
+    },
 }
 
 

@@ -424,10 +424,10 @@ def read_follow_candidates() -> list[dict]:
         if isinstance(item, str):
             out.append({"username": item.lstrip("@").lower(), "source": ""})
         elif isinstance(item, dict) and item.get("username"):
-            out.append({
-                "username": str(item["username"]).lstrip("@").lower(),
-                "source": item.get("source", ""),
-            })
+            d = dict(item)   # preserve vetted metadata (followers/posts/private/vetted_at)
+            d["username"] = str(item["username"]).lstrip("@").lower()
+            d["source"] = item.get("source", "")
+            out.append(d)
     return out
 
 
@@ -2183,23 +2183,32 @@ class Bot:
         except Exception:
             pass
 
-    def _filter_one(self, page, target: str, filters: dict) -> Optional[str]:
+    def _filter_one(self, page, target: str, filters: dict):
         """Browser-navigate a profile and apply the ACCOUNT-AGNOSTIC filters
-        (posts / followers / following ranges + private). Returns a reject reason
-        or None (passes). Relationship filters (already-follows-me / already-
-        following) are NOT applied here — the burner can't judge them; the core
-        bot handles those via its done-set + follow-time check."""
+        (posts / followers / following ranges + private). Returns
+        (reject_reason_or_None, meta) where meta carries the vetted profile data
+        (followers/posts/following/private/vetted_at) so the bot/dashboard can use
+        it without re-reading. Relationship filters are NOT applied here (the burner
+        can't judge them; the core bot handles those at follow time)."""
         try:
             page.goto(f"https://www.instagram.com/{target}/",
                       wait_until="domcontentloaded", timeout=20000)
             page.wait_for_selector("header", timeout=12000)
         except Exception:
-            return "unavailable"
+            return "unavailable", {}
         self._jitter(0.4, 1.2)   # brief settle (read-only burner — light pacing is fine)
-        if filters.get("skip_private", True) and self._is_private(page):
-            return "private"
+        private = self._is_private(page)
         counts = self._read_profile_counts(page)
-        return self._passes_filters(counts, filters)   # 'no_posts' / 'filtered' / None
+        meta = {
+            "followers": counts.get("followers"),
+            "posts": counts.get("posts"),
+            "following": counts.get("following"),
+            "private": private,
+            "vetted_at": int(time.time()),
+        }
+        if filters.get("skip_private", True) and private:
+            return "private", meta
+        return self._passes_filters(counts, filters), meta   # 'no_posts'/'filtered'/None
 
     def _filter_pool(self, page, cfg) -> None:
         """Vet the scraper_todo backlog. Each account: pass → append to the ELIGIBLE
@@ -2243,12 +2252,12 @@ class Bot:
                 continue
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             try:
-                reason = self._filter_one(page, u, filters)
+                reason, meta = self._filter_one(page, u, filters)
             except Exception as e:
                 self.state.emit("log", {"level": "error", "msg": f"filter @{u} failed: {e}"})
                 continue   # not resolved → stays in todo, retried next pass
             if reason is None:
-                result.append({"username": u, "source": c.get("source", "")})
+                result.append({"username": u, "source": c.get("source", ""), **meta})
                 result_set.add(u)
             else:
                 append_log(rejected_log, f"{ts}\t{u}\t{reason}")
@@ -2294,6 +2303,11 @@ class Bot:
                 browser_cfg["user_data_dir"] = ""   # CDP wins; don't touch main profile
             if scr.get("executable_path"):
                 browser_cfg["executable_path"] = scr["executable_path"]
+            # Distinct fingerprint from the main account (anti-association): overlay
+            # any scraper.browser.* overrides (UA/viewport/locale/timezone/proxy).
+            for k, v in (scr.get("browser") or {}).items():
+                if v not in (None, ""):
+                    browser_cfg[k] = v
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             try:
                 SCRAPER_PID.write_text(str(os.getpid()), encoding="utf-8")
@@ -3630,6 +3644,19 @@ class Bot:
             done.add(my_username.lower())
         return done
 
+    @staticmethod
+    def _source_rank(source: str) -> int:
+        """Lower = higher intent → followed first. Commenters/hashtag posters are
+        actively discussing the niche (best prospects); followers are passive."""
+        s = (source or "").lower()
+        if s.startswith("commenters") or s.startswith("hashtag"):
+            return 0
+        if s.startswith("likers"):
+            return 1
+        if s.startswith("followers"):
+            return 2
+        return 3
+
     def _process_follow_day(self, page, cfg, max_actions=None) -> str:
         """Run one daily batch of follows pulled from the candidate pool.
 
@@ -3711,6 +3738,9 @@ class Bot:
                     )
                 return "exhausted"
 
+            # Follow the highest-intent sources first (commenters/hashtags before
+            # passive followers) — better exposure ROI per scarce daily action.
+            eligible.sort(key=lambda c: self._source_rank(c.get("source", "")))
             cand = eligible[0]
             target = cand["username"]
             source = cand.get("source", "")
