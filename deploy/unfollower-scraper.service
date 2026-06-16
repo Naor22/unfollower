@@ -1,0 +1,19 @@
+[Unit]
+Description=Instagram scraper + filter service (burner account, 2nd Chrome)
+# Start after the network (and Tailscale, if used) is up.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User and paths to match your Pi.
+User=naor223
+WorkingDirectory=/home/naor223/unfollower
+ExecStart=/home/naor223/unfollower/.venv/bin/python scraper.py
+Environment=PYTHONUNBUFFERED=1
+# always: also recover if it exits cleanly (e.g. burner session lapsed → re-checks)
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

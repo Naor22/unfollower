@@ -700,6 +700,28 @@ async def clear_log(payload: LogClear):
     return {"ok": True, "cleared": cleared, "pruned": pruned}
 
 
+# ---------- scraper service status ----------
+
+@app.get("/api/scraper")
+async def scraper_status():
+    """Status of the standalone scraper service (a separate process). Reads the
+    heartbeat/counts file it publishes and derives `running` from heartbeat
+    freshness (the service writes its status every pass / every few profiles)."""
+    import json as _json
+    path = bot.SCRAPER_STATUS
+    if not path.exists():
+        return {"present": False, "running": False}
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"present": False, "running": False}
+    ts = float(data.get("ts", 0) or 0)
+    data["present"] = True
+    data["age"] = int(time.time() - ts) if ts else None
+    data["running"] = bool(ts and (time.time() - ts) < 180)
+    return data
+
+
 # ---------- deploy (browser file upload) ----------
 
 # Web assets land in static/; everything else routes by extension below. Anything

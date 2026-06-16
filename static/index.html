@@ -1131,6 +1131,31 @@
           </div>
 
           <div class="card" style="margin-top:18px;">
+            <div class="card-title">Scraper service <span class="pill">separate process · burner account</span>
+              <div style="flex:1"></div>
+              <span class="pill" x-show="scraper" :style="scraper && scraper.running ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--danger-bg);color:var(--danger)'" x-text="scraper ? (scraper.running ? 'running' : 'down') : ''"></span>
+            </div>
+            <p class="hint" style="margin-bottom:12px;">Scrapes sources + filters candidates on a 2nd Chrome (burner account), publishing a cleaned pool for the bot. Browser-only, isolated from your main account.</p>
+            <template x-if="scraper && scraper.present">
+              <div>
+                <div class="reach-stats">
+                  <div><div class="rs-n" x-text="scraper.pool || 0"></div><div class="rs-l">pool</div></div>
+                  <div><div class="rs-n" x-text="scraper.ready || 0"></div><div class="rs-l">ready</div></div>
+                  <div><div class="rs-n" x-text="scraper.checked || 0"></div><div class="rs-l">checked</div></div>
+                  <div><div class="rs-n" x-text="scraper.rejected || 0"></div><div class="rs-l">rejected</div></div>
+                </div>
+                <p class="hint" style="margin-top:10px;">
+                  <span x-show="scraper.phase" x-text="scraper.phase"></span><span x-show="scraper.age != null"> · updated <span x-text="scraper.age"></span>s ago</span>
+                  <span x-show="scraper.error" style="color:var(--warning);"><br>⚠ <span x-text="scraper.error"></span></span>
+                </p>
+              </div>
+            </template>
+            <template x-if="scraper && !scraper.present">
+              <p class="hint" style="color:var(--muted);">No scraper status yet — the <code>unfollower-scraper</code> service hasn't reported. See DEPLOY.md to set up the 2nd Chrome + burner account.</p>
+            </template>
+          </div>
+
+          <div class="card" style="margin-top:18px;">
             <div class="card-title">Deploy <span class="pill">pull latest from GitHub</span>
               <div style="flex:1"></div>
               <button class="ghost sm" @click="loadDeployStatus()" :disabled="deployBusy">Check</button>
@@ -1328,6 +1353,26 @@
                       <p class="hint" style="margin-top:8px;">“Also trim following list” unfollows non-whitelisted accounts from your imported following list (data/following.json) each cycle — use it to keep shrinking your following toward a target while marketing runs.</p>
                     </div>
                   </template>
+
+                  <template x-if="config.scraper && config.behavior">
+                    <div class="card">
+                      <div class="card-title">Scraper &amp; autopilot <span class="pill">separate service</span></div>
+                      <div class="switch-grid" style="margin-bottom:14px;">
+                        <div class="switch-cell"><span class="sc-label">Use external scraper (core bot stops scraping)</span><label class="switch"><input type="checkbox" x-model="config.follow.external_scraper" /><span class="track"></span></label></div>
+                        <div class="switch-cell"><span class="sc-label">Keep running when pool is empty</span><label class="switch"><input type="checkbox" x-model="config.behavior.keep_running" /><span class="track"></span></label></div>
+                        <div class="switch-cell"><span class="sc-label">Scraper service enabled</span><label class="switch"><input type="checkbox" x-model="config.scraper.enabled" /><span class="track"></span></label></div>
+                      </div>
+                      <div class="form-grid">
+                        <div><label>Idle re-check min (min)</label><input type="number" x-model.number="config.behavior.idle_recheck_min" /></div>
+                        <div><label>Idle re-check max (min)</label><input type="number" x-model.number="config.behavior.idle_recheck_max" /></div>
+                        <div><label>Scraper Chrome CDP endpoint</label><input type="text" x-model="config.scraper.cdp_endpoint" /></div>
+                        <div><label>Scrape pass gap (sec)</label><input type="number" x-model.number="config.scraper.idle_seconds" /></div>
+                        <div><label>Filter delay min (s)</label><input type="number" x-model.number="config.scraper.min_delay" /></div>
+                        <div><label>Filter delay max (s)</label><input type="number" x-model.number="config.scraper.max_delay" /></div>
+                      </div>
+                      <p class="hint" style="margin-top:8px;">The scraper runs as a separate service on a 2nd Chrome (burner account) — see DEPLOY.md. <strong>Use external scraper</strong> makes the core bot consume its cleaned pool instead of scraping itself; <strong>Keep running</strong> stops the bot from halting when the pool is momentarily empty (it sleeps &amp; re-checks). Watch live status under System → Scraper service.</p>
+                    </div>
+                  </template>
                 </div>
               </template>
 
@@ -1485,6 +1530,7 @@
         discoveryKeywordsText: '',
         discoveryNegativeText: '',
         system: null,
+        scraper: null,
         cpuHist: [],
         memHist: [],
         tempHist: [],
@@ -1543,13 +1589,18 @@
           if (tab === 'discovered') this.loadDiscovered();
           if (tab === 'analytics') this.loadAnalytics();
           if (tab === 'sources') this.loadSources();
-          if (tab === 'system') { this.startSysPolling(); if (!this.deployGit) this.loadDeployStatus(); } else this.stopSysPolling();
+          if (tab === 'system') { this.startSysPolling(); this.loadScraper(); if (!this.deployGit) this.loadDeployStatus(); } else this.stopSysPolling();
         },
 
         startSysPolling() {
           this.loadSystem();
+          this.loadScraper();
           if (this._sysTimer) clearInterval(this._sysTimer);
-          this._sysTimer = setInterval(() => this.loadSystem(), 3000);
+          this._sysTimer = setInterval(() => { this.loadSystem(); this.loadScraper(); }, 3000);
+        },
+
+        async loadScraper() {
+          try { this.scraper = await this.fetch('/api/scraper'); } catch (e) {}
         },
         stopSysPolling() {
           if (this._sysTimer) { clearInterval(this._sysTimer); this._sysTimer = null; }

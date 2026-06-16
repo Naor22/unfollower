@@ -178,6 +178,64 @@ Notes:
   bot stopped (it warns instead of restarting in that case).
 - After a restart the dashboard drops for a few seconds, then reconnects on its own.
 
+## 8b. Scraper + filter service (separate process, burner account)
+
+The scraping + candidate-filtering can run as a **separate service** on a **second
+Chrome logged into a throwaway "scraper" account**, so it never interferes with the
+core bot and your **main account bears zero scraping risk**. It scrapes the
+configured sources, browser-navigates each candidate to filter it (account-agnostic
+checks only — posts / follower range / private), and publishes a cleaned
+`data/follow_candidates.json` the core bot consumes. Browser navigation only — no IG
+API.
+
+**1. Create a throwaway IG account** (the "scraper"/burner). It only needs to *view*
+profiles, so a basic account is fine. If it gets flagged it's expendable.
+
+**2. Start a 2nd Chrome on the Pi for the burner**, on a different debug port and its
+own profile dir, then log the burner in once (it persists):
+
+```bash
+# headless 2nd Chrome on port 9223 with its own profile dir
+chromium --headless=new --no-sandbox \
+  --remote-debugging-port=9223 \
+  --user-data-dir=/home/naor223/.config/chromium-scraper &
+# log the burner in once (e.g. via a one-off headed session or your login helper),
+# pointing at this profile dir, so the session persists across restarts.
+```
+
+(If you prefer the persistent-profile model instead of CDP: set
+`scraper.cdp_endpoint: ""` and `scraper.user_data_dir:
+/home/naor223/.config/chromium-scraper` in `config.yaml`, and log the burner into
+that dir once.)
+
+**3. Point the config at it** (`config.yaml`): `scraper.cdp_endpoint:
+http://localhost:9223`, `scraper.enabled: true`, and `follow.external_scraper: true`
+(so the core bot stops scraping and just consumes the cleaned pool). Optionally
+`behavior.keep_running: true` so the core bot waits (sleeps & re-checks) instead of
+stopping when the pool is momentarily empty.
+
+**4. Install the service:**
+
+```bash
+sudo cp /home/naor223/unfollower/deploy/unfollower-scraper.service /etc/systemd/system/
+# edit User/paths if not naor223:/home/naor223/unfollower
+sudo systemctl daemon-reload
+sudo systemctl enable --now unfollower-scraper
+sudo systemctl status unfollower-scraper      # active (running)
+journalctl -u unfollower-scraper -f           # live logs
+```
+
+Watch live status in the dashboard under **System → Scraper service** (it reads the
+heartbeat the service writes to `data/scraper_status.json`). The scraper writes
+`data/filter_checked.log` (kept) and `data/filter_rejected.log` (filtered out); the
+latter feeds the core bot's done-set so it never visits pruned junk.
+
+> Both services live in the same git repo, so code ships via the dashboard's
+> **Deploy latest** button. After the first install, restart the scraper too if a
+> deploy changed `scraper.py`/`bot.py`:
+> `sudo systemctl restart unfollower-scraper` (or add it to a sudoers line like the
+> main unit if you want a button for it).
+
 ## 9. Remote access with Tailscale
 
 ```bash

@@ -32,6 +32,7 @@ FOLLOWING_CACHE = DATA_DIR / "following.json"
 FOLLOW_CANDIDATES = DATA_DIR / "follow_candidates.json"
 DISCOVERED_SOURCES = DATA_DIR / "discovered_sources.json"
 ACCOUNT_STATS = DATA_DIR / "account_stats.json"
+SCRAPER_STATUS = DATA_DIR / "scraper_status.json"   # separate scraper service heartbeat/counts
 ACTIVITY_LOG = DATA_DIR / "activity.json"   # shared live-activity feed (all devices)
 ACTIVITY_MAX = 1000                          # ring buffer cap (auto-cleanup)
 
@@ -79,11 +80,16 @@ class StateManager:
     receive messages via asyncio queues attached to the FastAPI event loop.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persist_events: bool = True) -> None:
         self._lock = threading.Lock()
         self._state = BotState()
         self._subscribers: list = []
         self._loop = None
+        # The separate scraper service uses its own StateManager but must NOT
+        # touch the shared activity.json (the server's StateManager owns it) — two
+        # processes writing the same file would corrupt the feed. persist_events=
+        # False keeps emit/update working (in-memory) without disk I/O.
+        self._persist = persist_events
         # Liveness marker for the watchdog. Bumped on every state update/emit AND
         # on every interruptible-sleep tick, so legitimate long sleeps (cooldowns,
         # daily loop) keep it fresh while a genuine hang (e.g. a frozen Playwright
@@ -93,7 +99,8 @@ class StateManager:
         # log). Ring buffer caps it; saved every few events.
         self._events = collections.deque(maxlen=ACTIVITY_MAX)
         self._events_since_save = 0
-        self._load_events()
+        if self._persist:
+            self._load_events()
 
     def attach_loop(self, loop) -> None:
         self._loop = loop
@@ -124,7 +131,7 @@ class StateManager:
         # Record to the shared feed (everything except high-frequency 'state').
         self._events.append(msg)
         self._events_since_save += 1
-        if self._events_since_save >= 25:
+        if self._persist and self._events_since_save >= 25:
             self._events_since_save = 0
             self._save_events()
         self._broadcast(msg)
@@ -389,8 +396,33 @@ def read_follow_candidates() -> list[dict]:
 
 
 def write_follow_candidates(entries: list[dict]) -> None:
+    """Atomically replace the candidate pool (temp file + os.replace) so a reader
+    in another process (the core bot) never sees a half-written file while the
+    scraper service republishes it."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    FOLLOW_CANDIDATES.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+    tmp = FOLLOW_CANDIDATES.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+    os.replace(tmp, FOLLOW_CANDIDATES)
+
+
+def read_filter_rejected_log() -> list[dict]:
+    """Candidates the scraper service filtered OUT (failed a filter). Excluded
+    from the follow done-set so the core bot never visits them."""
+    return _read_reason_log(_log_path("filter_rejected_log", "data/filter_rejected.log"))
+
+
+def read_filter_checked_log() -> list[dict]:
+    """Candidates the scraper service already evaluated and KEPT — tracked only so
+    the scraper doesn't re-check them (these stay in the pool to be followed)."""
+    path = _log_path("filter_checked_log", "data/filter_checked.log")
+    if not path.exists():
+        return []
+    rows = []
+    for line in _dedup_lines(path.read_text(encoding="utf-8")):
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            rows.append({"timestamp": parts[0], "username": parts[1]})
+    return rows
 
 
 def read_discovered_sources() -> list[dict]:
@@ -1974,6 +2006,174 @@ class Bot:
         finally:
             self._account_fetching = False
 
+    # ---- standalone scraper+filter service (separate process / 2nd Chrome) ----
+
+    def _write_scraper_status(self, error: Optional[str] = None,
+                              phase: str = "") -> None:
+        """Heartbeat + counts for the dashboard's Scraper card. Atomic write so the
+        server never reads a half-written file. The status FILE (not the WS state)
+        is how this separate process reports to the dashboard."""
+        try:
+            pool = read_follow_candidates()
+            done = self._follow_done_set(load_whitelist(), self._me)
+            ready = sum(1 for c in pool if c["username"] not in done)
+        except Exception:
+            pool, ready = [], 0
+        status = {
+            "ts": time.time(),
+            "phase": phase,
+            "pool": len(pool),
+            "ready": ready,
+            "checked": len(read_filter_checked_log()),
+            "rejected": len(read_filter_rejected_log()),
+            "error": error,
+        }
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = SCRAPER_STATUS.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+            os.replace(tmp, SCRAPER_STATUS)
+        except Exception:
+            pass
+
+    def _filter_one(self, page, target: str, filters: dict) -> Optional[str]:
+        """Browser-navigate a profile and apply the ACCOUNT-AGNOSTIC filters
+        (posts / followers / following ranges + private). Returns a reject reason
+        or None (passes). Relationship filters (already-follows-me / already-
+        following) are NOT applied here — the burner can't judge them; the core
+        bot handles those via its done-set + follow-time check."""
+        try:
+            page.goto(f"https://www.instagram.com/{target}/", wait_until="domcontentloaded")
+            page.wait_for_selector("header", timeout=12000)
+        except Exception:
+            return "unavailable"
+        self._jitter(1.0, 2.5)
+        if filters.get("skip_private", True) and self._is_private(page):
+            return "private"
+        counts = self._read_profile_counts(page)
+        return self._passes_filters(counts, filters)   # 'no_posts' / 'filtered' / None
+
+    def _filter_pool(self, page, cfg) -> None:
+        """Evaluate not-yet-checked candidates, logging keep/reject, then republish
+        the pool (atomic) with rejected + already-consumed accounts removed."""
+        follow_cfg = cfg.get("follow", {}) or {}
+        filters = follow_cfg.get("filters", {}) or {}
+        scr = cfg.get("scraper", {}) or {}
+        min_d = float(scr.get("min_delay", 3))
+        max_d = float(scr.get("max_delay", 8))
+        long_every = int(scr.get("long_break_every", 40))
+        long_min = float(scr.get("long_break_min", 60))
+        long_max = float(scr.get("long_break_max", 180))
+
+        checked_log = _log_path("filter_checked_log", "data/filter_checked.log")
+        rejected_log = _log_path("filter_rejected_log", "data/filter_rejected.log")
+
+        done = self._follow_done_set(load_whitelist(), self._me)
+        checked = {r["username"] for r in read_filter_checked_log()}
+        rejected = {r["username"] for r in read_filter_rejected_log()}
+        pool = read_follow_candidates()
+        todo = [c["username"] for c in pool
+                if c["username"] not in done
+                and c["username"] not in checked
+                and c["username"] not in rejected]
+
+        self._write_scraper_status(phase=f"filtering {len(todo)} candidate(s)")
+        processed = 0
+        for u in todo:
+            if self._stop_event.is_set():
+                break
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                reason = self._filter_one(page, u, filters)
+            except Exception as e:
+                self.state.emit("log", {"level": "error", "msg": f"filter @{u} failed: {e}"})
+                continue   # leave unchecked, retry next pass
+            if reason is None:
+                append_log(checked_log, f"{ts}\t{u}")
+                checked.add(u)
+            else:
+                append_log(rejected_log, f"{ts}\t{u}\t{reason}")
+                rejected.add(u)
+            processed += 1
+            if processed % 10 == 0:
+                self._write_scraper_status(phase=f"filtered {processed}/{len(todo)}")
+            self._jitter(min_d, max_d)
+            if long_every and processed % long_every == 0:
+                self._interruptible_sleep(random.uniform(long_min, long_max))
+
+        # Republish: drop rejected + already-consumed, keep good + still-unchecked.
+        new_pool = [c for c in pool
+                    if c["username"] not in rejected and c["username"] not in done]
+        if len(new_pool) != len(pool):
+            write_follow_candidates(new_pool)
+        self._write_scraper_status(phase="idle")
+
+    def run_scraper(self) -> None:
+        """Entry point for the standalone scraper service (separate process, its
+        own Chrome / burner account). Scrapes sources, browser-filters candidates,
+        and atomically publishes the cleaned pool for the core bot to consume.
+        Never follows/unfollows. Browser navigation only — no IG API."""
+        try:
+            load_dotenv(ROOT / ".env", override=True)
+            # The done-set excludes accounts the MAIN account already follows/handled
+            # (shared data dir), so _me is the main handle even though the browser is
+            # the burner's session.
+            self._me = (os.getenv("IG_USERNAME") or "").lstrip("@").lower()
+            cfg = load_config()
+            scr = cfg.get("scraper", {}) or {}
+            # Build the scraper's own browser config: it must point at the BURNER's
+            # Chrome, never the main account's. Default is a 2nd CDP endpoint
+            # (:9223). If running on a persistent profile instead, set
+            # scraper.user_data_dir; we then blank the inherited main profile so two
+            # processes never open the same persistent dir.
+            browser_cfg = dict(cfg["browser"])
+            ep = scr.get("cdp_endpoint")
+            browser_cfg["cdp_endpoint"] = ep if ep is not None else browser_cfg.get("cdp_endpoint")
+            if scr.get("user_data_dir"):
+                browser_cfg["user_data_dir"] = scr["user_data_dir"]
+            elif browser_cfg.get("cdp_endpoint"):
+                browser_cfg["user_data_dir"] = ""   # CDP wins; don't touch main profile
+            if scr.get("executable_path"):
+                browser_cfg["executable_path"] = scr["executable_path"]
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            self._write_scraper_status(phase="starting")
+
+            with sync_playwright() as p:
+                browser, context, page, using_cdp, using_persistent = self._connect(p, browser_cfg)
+                if not self._is_logged_in(page):
+                    self._write_scraper_status(
+                        error="scraper Chrome is not logged in — log the burner account "
+                              "in once on the 2nd Chrome (port 9223), then restart")
+                    return
+                while not self._stop_event.is_set():
+                    day_cfg = load_config()
+                    scr = day_cfg.get("scraper", {}) or {}
+                    idle = float(scr.get("idle_seconds", 600))
+                    # Dashboard pause switch: keep the service alive but idle.
+                    if not scr.get("enabled", False):
+                        self._write_scraper_status(phase="disabled (toggle off)")
+                        self._interruptible_sleep(30)
+                        continue
+                    # 1. scrape raw usernames (reuses every source scraper)
+                    self._write_scraper_status(phase="scraping sources")
+                    try:
+                        self._scrape_candidates(page, day_cfg)
+                    except Exception as e:
+                        self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
+                    if self._stop_event.is_set():
+                        break
+                    # 2. browser-filter the pool
+                    self._filter_pool(page, day_cfg)
+                    if self._stop_event.is_set():
+                        break
+                    # 3. idle until the next pass (keeps the pool topped + clean)
+                    self._write_scraper_status(phase="idle")
+                    self._interruptible_sleep(idle * random.uniform(0.85, 1.15))
+        except Exception as e:
+            self._write_scraper_status(error=str(e))
+        finally:
+            self._write_scraper_status(phase="stopped")
+
     def _adjust_following(self, delta: int) -> None:
         """Nudge the live following count by ±1 after a real follow/unfollow, so the
         status bar tracks between full re-syncs. No-op until the first fetch seeds it."""
@@ -3108,11 +3308,15 @@ class Bot:
 
         # Auto top-up: if the eligible pool is below candidate_pool_min and any
         # sources are configured, scrape more strangers before following.
+        # Skipped entirely when an external scraper service owns the pool — the
+        # core bot then only consumes the cleaned pool it publishes.
         sources = follow_cfg.get("sources", {}) or {}
         has_sources = bool((sources.get("follower_profiles") or [])
                            or (sources.get("liker_posts") or []))
+        external_scraper = bool(follow_cfg.get("external_scraper", False))
         pool_min = int(follow_cfg.get("candidate_pool_min", 300))
-        if has_sources and len(targets) < pool_min and not self._stop_event.is_set():
+        if (not external_scraper and has_sources and len(targets) < pool_min
+                and not self._stop_event.is_set()):
             self.state.update(phase_detail=f"pool low ({len(targets)}) — scraping sources")
             try:
                 self._scrape_candidates(page, cfg)
@@ -3730,17 +3934,34 @@ class Bot:
                                   "Stopped — lower the daily cap and start again later.",
                         )
                         break
-                    if not daily_loop:
+                    day_behavior = day_cfg.get("behavior", {}) or {}
+                    keep_running = (bool(day_behavior.get("keep_running", False))
+                                    and mode in ("follow", "churn"))
+
+                    if not daily_loop and not keep_running:
                         break  # one-shot mode: a single batch then stop
 
-                    # Sleep ~loop_hours (randomized) before the next daily batch.
-                    sleep_s = loop_hours * 3600 * random.uniform(0.9, 1.1)
+                    if keep_running:
+                        # Don't hard-stop when the pool is empty — sleep a short,
+                        # randomized interval and re-check. A background scraper
+                        # service refills the pool; churn-unfollows keep maturing.
+                        lo = float(day_behavior.get("idle_recheck_min", 15))
+                        hi = float(day_behavior.get("idle_recheck_max", 30))
+                        sleep_s = random.uniform(min(lo, hi), max(lo, hi)) * 60
+                        note = ("pool empty — waiting for fresh candidates"
+                                if outcome == "exhausted" else "cycle done — re-checking")
+                    else:
+                        # Daily-loop: sleep ~loop_hours before the next batch.
+                        sleep_s = loop_hours * 3600 * random.uniform(0.9, 1.1)
+                        note = ("list fully processed — re-checking"
+                                if outcome == "exhausted" else "daily batch done")
+
                     wake = time.time() + sleep_s
-                    note = ("list fully processed — re-checking"
-                            if outcome == "exhausted" else "daily batch done")
+                    human = (f"~{sleep_s / 60:.0f}m" if sleep_s < 3600
+                             else f"~{sleep_s / 3600:.1f}h")
                     self.state.update(
                         status="sleeping", current_target=None,
-                        phase_detail=f"{note}; next run in ~{sleep_s / 3600:.1f}h",
+                        phase_detail=f"{note}; next cycle in {human}",
                         next_action_at=wake,
                     )
                     self._interruptible_sleep(sleep_s)

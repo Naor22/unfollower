@@ -20,6 +20,7 @@ DEFAULT_FOLLOW = {
     "max_delay_seconds": 200,
     "candidate_pool_min": 300,
     "scrape_per_source_cap": 600,
+    "external_scraper": False,   # true = the separate scraper service owns the pool
     "filters": {
         "skip_already_follows_me": True,
         "skip_private": True,
@@ -43,6 +44,25 @@ DEFAULT_LOGS = {
     "follow_failed_log": "data/follow_failed.log",
     "churn_unfollowed_log": "data/churn_unfollowed.log",
     "follow_kept_log": "data/follow_kept.log",
+    "filter_checked_log": "data/filter_checked.log",
+    "filter_rejected_log": "data/filter_rejected.log",
+}
+
+DEFAULT_BEHAVIOR = {
+    "keep_running": False,      # follow/churn: sleep & retry on empty pool instead of stopping
+    "idle_recheck_min": 15,
+    "idle_recheck_max": 30,
+}
+
+DEFAULT_SCRAPER = {
+    "enabled": False,
+    "cdp_endpoint": "http://localhost:9223",   # the burner account's 2nd Chrome
+    "idle_seconds": 600,
+    "min_delay": 3,
+    "max_delay": 8,
+    "long_break_every": 40,
+    "long_break_min": 60,
+    "long_break_max": 180,
 }
 
 
@@ -71,6 +91,12 @@ def main() -> int:
 
     cfg.setdefault("logging", {})
     added += _deep_fill(cfg["logging"], DEFAULT_LOGS)
+
+    cfg.setdefault("behavior", {})
+    added += _deep_fill(cfg["behavior"], DEFAULT_BEHAVIOR)
+
+    cfg.setdefault("scraper", {})
+    added += _deep_fill(cfg["scraper"], DEFAULT_SCRAPER)
 
     if added:
         bot.save_config(cfg)
