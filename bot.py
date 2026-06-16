@@ -1381,6 +1381,10 @@ class Bot:
             for getter in (
                 lambda: scope.get_by_role("button", name="Unfollow").first,
                 lambda: scope.locator(':text-is("Unfollow")').first,
+                # Pending follow-request to a private account → the confirm is a
+                # 'Cancel Follow Request' / 'Withdraw' control, not 'Unfollow'.
+                lambda: scope.get_by_role("button", name=re.compile(r"cancel follow request|withdraw", re.I)).first,
+                lambda: scope.locator(':text-is("Cancel Follow Request")').first,
             ):
                 loc = getter()
                 try:
@@ -1605,6 +1609,35 @@ class Bot:
             self._step(target, "confirmed not following", "neutral")
         return "not_following"
 
+    def _withdraw_request(self, page, target: str, btn) -> str:
+        """Handle a 'Requested' (pending follow request to a private account) in the
+        unfollow/churn path. Clicking it withdraws the request; some IG variants pop
+        a confirm dialog, others withdraw on click. Best-effort + terminal: a pending
+        request isn't a real follow, so we never loop the full fallback chain on it.
+        Returns 'ok' (recorded as churned/done)."""
+        self._step(target, "withdrawing pending follow request")
+        try:
+            btn.click(timeout=5000)
+        except Exception:
+            self._step(target, "request button stuck — recording as done", "neutral")
+            return "ok"
+        # If a confirm dialog appears, click its withdraw/unfollow control.
+        try:
+            dlg = page.locator('div[role="dialog"]').last
+            if dlg.count() and dlg.is_visible(timeout=2000):
+                self._click_unfollow_control(dlg, timeout_s=5)
+        except Exception:
+            pass
+        self._jitter(0.6, 1.4)
+        if self._rate_limited(page):
+            shot = self._screenshot(page, f"fail_ratelimit_{target}")
+            return f"rate_limited (shot:{shot})"
+        if self._find_following_button(page) is None:
+            self._step(target, "follow request withdrawn", "good")
+        else:
+            self._step(target, "request still pending — recording as done", "neutral")
+        return "ok"
+
     def _clear_dialogs(self, page) -> None:
         """Press Escape to dismiss any stray open dialog so a leftover modal from a
         failed attempt doesn't poison the next target / retry."""
@@ -1658,6 +1691,18 @@ class Bot:
             # real relationship instead of guessing from a half-rendered header.
             self._step(target, "no header button — trying post menu", "neutral")
             return self._unfollow_via_post(page, target)
+
+        # Pending follow-request (private account we requested earlier, not yet
+        # accepted) shows a 'Requested' button. Clicking it doesn't open the normal
+        # Unfollow menu — it withdraws the request — so the regular path fails and
+        # then burns the whole fallback chain + retries. Handle it directly and
+        # return terminal so we don't waste minutes on it.
+        try:
+            btn_label = (btn.inner_text(timeout=1000) or "").strip().lower()
+        except Exception:
+            btn_label = ""
+        if "request" in btn_label:
+            return self._withdraw_request(page, target, btn)
 
         self._step(target, "opening header menu")
         try:
