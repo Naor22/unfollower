@@ -2631,6 +2631,12 @@ class Bot:
                     day_cfg = load_config()
                     scr = day_cfg.get("scraper", {}) or {}
                     idle = float(scr.get("idle_seconds", 600))
+                    # While idle the scraper must still wake often enough to (a) keep its
+                    # status heartbeat fresh - the bot treats it as OFF past 180s stale -
+                    # and (b) re-read config + re-evaluate the pool gate, so a pool that
+                    # just became needed (reach toggled on, or the bot drained one) is
+                    # filled within a minute instead of after a full idle_seconds rest.
+                    idle_poll = min(idle, 60.0)
                     # Dashboard pause switch: keep the service alive but idle.
                     if not scr.get("enabled", False):
                         disconnect()
@@ -2685,7 +2691,7 @@ class Bot:
                         self._write_scraper_status(
                             phase=f"pools at target - follow {follow_ready}/{follow_target}, "
                                   f"reach {reach_ready}/{reach_target}; idle")
-                        self._interruptible_sleep(idle)
+                        self._interruptible_sleep(idle_poll)
                         continue
 
                     # --- ACTIVE: bring up the burner browser and do a pass ---
@@ -2738,9 +2744,11 @@ class Bot:
                             if self._stop_event.is_set():
                                 break
                     # 4. idle until the next pass → close the browser, free the Pi.
+                    #    Short poll (not the full idle_seconds) so the heartbeat stays
+                    #    fresh and a newly-needed pool is picked up within a minute.
                     disconnect()
                     self._write_scraper_status(phase="idle")
-                    self._interruptible_sleep(idle * random.uniform(0.85, 1.15))
+                    self._interruptible_sleep(idle_poll * random.uniform(0.85, 1.15))
                 disconnect()
         except Exception as e:
             self._write_scraper_status(error=str(e))
