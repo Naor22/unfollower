@@ -1124,11 +1124,13 @@ class Bot:
 
     # --- source scraping (growth: fill the candidate pool with strangers) ---
 
-    def _collect_modal(self, dialog, exclude: str, cap: int) -> list[str]:
+    def _collect_modal(self, dialog, exclude: str, cap: int, on_progress=None) -> list[str]:
         """Scroll a username-list dialog and accumulate usernames up to `cap`.
         Shared by followers/following and likers scraping. Mirrors the
         accumulate-on-every-scroll approach of _scrape_following so rows that
-        virtualize out of the DOM aren't lost."""
+        virtualize out of the DOM aren't lost. `on_progress(count)` (optional) fires
+        as the count grows so a long scroll keeps a live heartbeat (the scraper wires
+        it to its status file - otherwise the dashboard can't tell scrolling from stuck)."""
         seen: set[str] = set()
         order: list[str] = []
         self._collect_into(dialog, exclude, seen, order)
@@ -1146,6 +1148,8 @@ class Bot:
                 stagnant = 0
                 prev = len(seen)
                 self.state.update(phase_detail=f"collected {len(seen)} so far...")
+                if on_progress:
+                    on_progress(len(order))
         return order[:cap]
 
     def _open_list_modal(self, page, profile: str, which: str):
@@ -1181,16 +1185,18 @@ class Bot:
             )
         return page.locator('div[role="dialog"]').last
 
-    def _scrape_list(self, page, profile: str, which: str, cap: int = 600) -> list[str]:
+    def _scrape_list(self, page, profile: str, which: str, cap: int = 600,
+                     on_progress=None) -> list[str]:
         """Return up to `cap` usernames from a profile's followers/following."""
         self.state.update(status="scraping", phase_detail=f"opening @{profile}'s {which}")
         dialog = self._open_list_modal(page, profile, which)
         self._jitter(1.5, 3.0)
         # Exclude the profile owner's own self-links; our own account and
         # already-followed accounts are dropped later by the done-set.
-        return self._collect_modal(dialog, profile, cap)
+        return self._collect_modal(dialog, profile, cap, on_progress=on_progress)
 
-    def _scrape_likers(self, page, post_url: str, cap: int = 600) -> list[str]:
+    def _scrape_likers(self, page, post_url: str, cap: int = 600,
+                       on_progress=None) -> list[str]:
         """Return up to `cap` usernames who liked a post. Returns [] when IG
         hides the likers (common on video/reels and very large accounts)."""
         self.state.update(status="scraping", phase_detail=f"opening likers of {post_url}")
@@ -1220,9 +1226,10 @@ class Bot:
         dialog = page.locator('div[role="dialog"]').last
         self._jitter(1.0, 2.0)
         my = (os.getenv("IG_USERNAME") or "").lower()
-        return self._collect_modal(dialog, my, cap)
+        return self._collect_modal(dialog, my, cap, on_progress=on_progress)
 
-    def _scrape_commenters(self, page, post_url: str, cap: int = 200) -> list[str]:
+    def _scrape_commenters(self, page, post_url: str, cap: int = 200,
+                           on_progress=None) -> list[str]:
         """Return up to `cap` usernames who COMMENTED on a post (higher intent than
         passive likers). Best-effort: IG's comment markup shifts often, so the
         load-more selectors are tried loosely and a miss just yields fewer names."""
@@ -1271,10 +1278,12 @@ class Bot:
             else:
                 stagnant = 0
                 self.state.update(phase_detail=f"collected {len(seen)} commenters...")
+                if on_progress:
+                    on_progress(len(order))
         return order[:cap]
 
     def _scrape_hashtag(self, page, tag: str, cap: int = 200,
-                        per_post: int = 60) -> list[str]:
+                        per_post: int = 60, on_progress=None) -> list[str]:
         """Return up to `cap` usernames sourced from a hashtag - the authors and
         commenters of recent posts under #tag. People posting/commenting on a
         niche hashtag are high-intent targets."""
@@ -1324,7 +1333,7 @@ class Bot:
             if self._stop_event.is_set() or len(out) >= cap:
                 break
             try:
-                people = self._scrape_commenters(page, url, per_post)
+                people = self._scrape_commenters(page, url, per_post, on_progress=on_progress)
             except Exception:
                 people = []
             for u in people:
@@ -1332,10 +1341,12 @@ class Bot:
                     continue
                 seen_users.add(u)
                 out.append(u)
+            if on_progress:
+                on_progress(len(out))
         return out[:cap]
 
     def _scrape_candidates(self, page, cfg, pool_read=None, pool_write=None,
-                           extra_exclude=None, on_progress=None) -> int:
+                           extra_exclude=None, on_progress=None, status_cb=None) -> int:
         """Run every configured source, dedup against the follow done-set + the
         existing pool (+ extra_exclude), and append new usernames. Stops early once
         the pending pool reaches candidate_pool_min. Returns the count added.
@@ -1400,30 +1411,53 @@ class Bot:
         def _norm_tag(v):
             return (v or "").strip().lstrip("#").lower()
 
+        # Live heartbeat during a seed's (possibly minute-long) scroll: report the
+        # running count to status_cb, throttled so we don't rewrite the status file
+        # every scroll. Without this the dashboard's scraper phase/ts freezes mid-seed
+        # and a long scroll is indistinguishable from a hang.
+        _last_status = [0.0]
+        def _seed_progress(desc):
+            if not status_cb:
+                return None
+            def cb(n):
+                now = time.monotonic()
+                if now - _last_status[0] >= 2.0:
+                    _last_status[0] = now
+                    status_cb(f"scraping {desc}: {n} collected")
+            return cb
+
         tasks = []   # each: {"label","desc","scrape","done","buf"}
         for prof in sources.get("follower_profiles", []) or []:
             prof = _norm_profile(prof)
             if prof:
                 tasks.append({"label": f"followers:{prof}", "desc": f"@{prof} followers",
-                              "scrape": (lambda p=prof: self._scrape_list(page, p, "followers", per_cap)),
+                              "scrape": (lambda p=prof, d=f"@{prof} followers":
+                                         self._scrape_list(page, p, "followers", per_cap,
+                                                           on_progress=_seed_progress(d))),
                               "done": False, "buf": []})
         for post in sources.get("liker_posts", []) or []:
             post = _norm_post(post)
             if post:
                 tasks.append({"label": f"likers:{post}", "desc": f"likers of {post}",
-                              "scrape": (lambda u=post: self._scrape_likers(page, u, per_cap)),
+                              "scrape": (lambda u=post, d=f"likers of {post}":
+                                         self._scrape_likers(page, u, per_cap,
+                                                             on_progress=_seed_progress(d))),
                               "done": False, "buf": []})
         for post in sources.get("commenter_posts", []) or []:
             post = _norm_post(post)
             if post:
                 tasks.append({"label": f"commenters:{post}", "desc": f"commenters of {post}",
-                              "scrape": (lambda u=post: self._scrape_commenters(page, u, per_cap)),
+                              "scrape": (lambda u=post, d=f"commenters of {post}":
+                                         self._scrape_commenters(page, u, per_cap,
+                                                                 on_progress=_seed_progress(d))),
                               "done": False, "buf": []})
         for tag in sources.get("hashtags", []) or []:
             tag = _norm_tag(tag)
             if tag:
                 tasks.append({"label": f"hashtag:{tag}", "desc": f"#{tag}",
-                              "scrape": (lambda t=tag: self._scrape_hashtag(page, t, per_cap)),
+                              "scrape": (lambda t=tag, d=f"#{tag}":
+                                         self._scrape_hashtag(page, t, per_cap,
+                                                              on_progress=_seed_progress(d))),
                               "done": False, "buf": []})
 
         scraped_labels: set[str] = set()   # seeds we've actually navigated this pass
@@ -2671,7 +2705,8 @@ class Bot:
                                 pool_read=read_scraper_todo,
                                 pool_write=write_scraper_todo,
                                 extra_exclude=exclude,
-                                on_progress=lambda: self._write_scraper_status(phase="scraping sources"))
+                                on_progress=lambda: self._write_scraper_status(phase="scraping sources"),
+                                status_cb=lambda ph: self._write_scraper_status(phase=ph))
                         except Exception as e:
                             self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
                         if self._stop_event.is_set():
