@@ -2104,6 +2104,114 @@ class Bot:
                 continue
         return None
 
+    def _find_post_follow_button(self, page, target: str):
+        """The 'Follow' button next to the author's name in an OPEN post's header.
+        Scoped to the author's profile link so we never grab a 'Follow' from a
+        suggested-accounts strip elsewhere on the page. None if not present."""
+        target = target.lstrip("@").lower()
+        sel = (f'xpath=(//a[@href="/{target}/"])[1]/following::*'
+               f'[(self::button or @role="button") and '
+               f'(normalize-space()="Follow" or normalize-space()="Follow Back")][1]')
+        end = time.monotonic() + 6
+        while time.monotonic() < end:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0 and loc.first.is_visible(timeout=400):
+                    return loc.first
+            except Exception:
+                pass
+            # Generic fallback: the first Follow button anywhere on the post page
+            # (the author's header button is first in DOM order).
+            try:
+                g = page.get_by_role("button", name="Follow", exact=True).first
+                if g.is_visible(timeout=300):
+                    return g
+            except Exception:
+                pass
+            time.sleep(0.3)
+        return None
+
+    def _post_header_following(self, page, target: str) -> bool:
+        """Did the post-header button flip to Following/Requested? Used to verify
+        a follow done via the post fallback."""
+        target = target.lstrip("@").lower()
+        sel = (f'xpath=(//a[@href="/{target}/"])[1]/following::*'
+               f'[(self::button or @role="button") and '
+               f'(normalize-space()="Following" or normalize-space()="Requested")][1]')
+        try:
+            loc = page.locator(sel)
+            return loc.count() > 0 and loc.first.is_visible(timeout=500)
+        except Exception:
+            return False
+
+    def _follow_via_post(self, page, target: str) -> str:
+        """Fallback for profiles whose header Follow button never renders (an IG
+        web bug). Open one of the user's posts and click the 'Follow' button next
+        to the author's name in the post header, which still works. Mirrors
+        _unfollow_via_post."""
+        post = page.locator('a[href*="/p/"], a[href*="/reel/"]').first
+        try:
+            post.wait_for(state="attached", timeout=5000)
+            href = post.get_attribute("href")
+        except Exception:
+            href = None
+        if not href:
+            shot = self._screenshot(page, f"fail_fnoposts_{target}")
+            return f"no_button_no_posts (shot:{shot})"
+
+        post_url = href if href.startswith("http") else f"https://www.instagram.com{href}"
+        self._step(target, "opening a post to follow")
+        try:
+            page.goto(post_url, wait_until="domcontentloaded")
+        except Exception:
+            shot = self._screenshot(page, f"fail_fpostopen_{target}")
+            return f"post_open_failed (shot:{shot})"
+        self._jitter(1.5, 3.0)
+
+        # Maybe the post header already shows Following (header was just bugged).
+        if self._post_header_following(page, target):
+            return "already_following"
+
+        btn = self._find_post_follow_button(page, target)
+        if btn is None:
+            shot = self._screenshot(page, f"fail_fpostnobtn_{target}")
+            return f"post_follow_item_missing (shot:{shot})"
+
+        self._step(target, "clicking Follow in post header")
+        try:
+            btn.click(timeout=5000)
+        except Exception as e:
+            shot = self._screenshot(page, f"fail_fpostclick_{target}")
+            return f"follow_click_failed:{type(e).__name__} (shot:{shot})"
+
+        if self._rate_limited(page):
+            shot = self._screenshot(page, f"fail_ratelimit_{target}")
+            return f"rate_limited (shot:{shot})"
+
+        # Verify: the post-header button should flip to Following/Requested.
+        self._step(target, "verifying follow (post)")
+        end = time.monotonic() + 10
+        while time.monotonic() < end:
+            if self._stop_event.is_set():
+                return "ok"
+            if self._post_header_following(page, target):
+                self._step(target, "followed (via post)", "good")
+                return "ok"
+            time.sleep(0.4)
+
+        # Cross-check on the profile page before calling it a failure.
+        try:
+            page.goto(f"https://www.instagram.com/{target}/", wait_until="domcontentloaded")
+            self._jitter(1.5, 3.0)
+            if self._still_following(page):
+                self._step(target, "followed (via post)", "good")
+                return "ok"
+        except Exception:
+            pass
+
+        shot = self._screenshot(page, f"fail_fpostverify_{target}")
+        return f"post_follow_verify_failed (shot:{shot})"
+
     def _follow(self, page, target: str, filters: Optional[dict] = None,
                 disc_cfg: Optional[dict] = None) -> str:
         """Visit a profile and follow it, applying filters. Mirrors _unfollow.
@@ -2153,12 +2261,11 @@ class Bot:
 
         btn = self._find_follow_button(page)
         if btn is None:
-            # No Follow button and no Following button — the action row never
-            # rendered (the same IG web bug the unfollow side hits). Treat as a
-            # transient failure so it's retried rather than marked done.
-            self._step(target, "no Follow button (IG bug) — retry", "bad")
-            shot = self._screenshot(page, f"fail_nofollowbtn_{target}")
-            return f"follow_button_missing (shot:{shot})"
+            # No header Follow button (the same IG web bug the unfollow side hits).
+            # Fall back to opening a post and using the Follow button next to the
+            # author's name in the post header, which still works.
+            self._step(target, "no header Follow button — trying via a post", "neutral")
+            return self._follow_via_post(page, target)
 
         self._step(target, "clicking Follow")
         try:
