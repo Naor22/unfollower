@@ -803,6 +803,9 @@ class Bot:
         self._intent = ""       # current action intent ("follow"/"unfollow"/"like"),
                                 # set at each flow's entry so every _step shows what
                                 # the bot is TRYING to do, not just the final outcome
+        self._scraper_service = False  # True only in the standalone scraper process, so
+                                       # its long passes yield the Pi the moment the bot
+                                       # starts acting (the core bot's self-scrape must not)
         self._warmed = False    # one-time external-scraper pool warm-up gate
         self._actions_since_resync = 0  # drives periodic account-count re-sync
         self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
@@ -1596,6 +1599,11 @@ class Bot:
         # appends in todo order, so the eligible pool inherits this mixing). 0/neg
         # = no chunking (drain each seed fully, legacy-ish ordering).
         seed_chunk = int(targeting.get("scrape_per_seed_cap", 150))
+        # Yield the Pi the instant the bot starts working (scraper service only - the
+        # core bot's own self-scrape runs WHILE acting, so it must never yield to itself).
+        _coordinate = (cfg.get("scraper", {}) or {}).get("coordinate_with_bot", True)
+        def _yield_to_bot():
+            return self._scraper_service and _coordinate and self._bot_is_acting()
 
         my = (os.getenv("IG_USERNAME") or "").lower()
         done = self._follow_done_set(load_whitelist(), my)
@@ -1651,10 +1659,13 @@ class Bot:
             def hook(order):
                 state["new"] += ingest(order, label)
                 now = time.monotonic()
-                if status_cb and now - _last_status[0] >= 1.5:
+                stop_for_bot = False
+                if now - _last_status[0] >= 1.5:
                     _last_status[0] = now
-                    status_cb(f"scraping {desc}: backlog {pending_count()}")
-                if self._stop_event.is_set() or pending_count() >= pool_min:
+                    if status_cb:
+                        status_cb(f"scraping {desc}: backlog {pending_count()}")
+                    stop_for_bot = _yield_to_bot()   # checked ≤ every 1.5s mid-scroll
+                if self._stop_event.is_set() or stop_for_bot or pending_count() >= pool_min:
                     return "stop"
                 if state["new"] >= chunk_box[0]:
                     return "next"
@@ -1716,12 +1727,19 @@ class Bot:
         # is drained and marked exhausted. The lead rotates each round so the seeds cut
         # off when the pool fills get to lead next time - even coverage over refills.
         rr = 0
+        yielded = False
         while not self._stop_event.is_set() and pending_count() < pool_min:
+            if _yield_to_bot():
+                yielded = True
+                break
             progressed = False
             order = tasks[rr % n_seeds:] + tasks[:rr % n_seeds]
             rr += 1
             for task in order:
                 if self._stop_event.is_set() or pending_count() >= pool_min:
+                    break
+                if _yield_to_bot():       # bot started working → stop between seeds
+                    yielded = True
                     break
                 if task["exhausted"]:
                     continue
@@ -1746,7 +1764,7 @@ class Bot:
                                                    f"(backlog {pending_count()})"})
                 if state["new"] < chunk_box[0]:
                     task["exhausted"] = True   # gave less than a fair chunk - drained
-            if not progressed:
+            if yielded or not progressed:
                 break
 
         if added:
@@ -2670,6 +2688,23 @@ class Bot:
             pass
         return ""
 
+    def _await_scraper_idle(self, max_wait: float = 10.0) -> None:
+        """Called by the BOT right after it announces it's acting: block briefly until
+        the scraper has actually released the Pi (closed its Chrome), so the two never
+        hold a browser at once. The scraper bails its current pass within ~1.5s of
+        seeing the bot act and reports an idle/paused phase; we poll for that. Bounded
+        so a stuck/absent scraper can never deadlock the bot."""
+        if not scraper_running():
+            return
+        idle_marks = ("idle", "pools at target", "paused", "stopped", "disabled", "starting")
+        end = time.monotonic() + max_wait
+        while time.monotonic() < end and not self._stop_event.is_set():
+            ph = self._scraper_phase().lower()
+            if not ph or any(ph.startswith(m) for m in idle_marks):
+                return   # scraper released (or status stale/absent) → safe to proceed
+            self.state.update(phase_detail="waiting for the scraper to free the Pi…")
+            self._interruptible_sleep(0.5)
+
     def _write_scraper_status(self, error: Optional[str] = None,
                               phase: str = "") -> None:
         """Heartbeat + counts for the dashboard's Scraper card. Atomic write so the
@@ -2764,6 +2799,11 @@ class Bot:
         if target is None:
             follows_cap = int((cfg.get("limits", {}) or {}).get("follows_per_day", 30))
             target = max(1, follows_cap * int(scr.get("follow_pool_mult", 5)))
+        # Yield the Pi the instant the bot starts working - checked up front (before any
+        # profile) AND every few profiles - so vetting never overlaps an active bot.
+        if coordinate and self._bot_is_acting():
+            self._write_scraper_status(phase="paused - bot became active")
+            return
         processed = 0
         for c in todo:
             if self._stop_event.is_set():
@@ -2811,6 +2851,7 @@ class Bot:
         own Chrome / burner account). Scrapes sources, browser-filters candidates,
         and atomically publishes the cleaned pool for the core bot to consume.
         Never follows/unfollows. Browser navigation only - no IG API."""
+        self._scraper_service = True   # arms the in-pass "yield to the bot" checks
         try:
             load_dotenv(ROOT / ".env", override=True)
             # The done-set excludes accounts the MAIN account already follows/handled
@@ -2991,6 +3032,13 @@ class Bot:
                             self._filter_pool(page, day_cfg, target=follow_target)
                             if self._stop_event.is_set():
                                 break
+                    # If the bot started working during the follow pass, release the Pi
+                    # NOW (don't start reach harvesting alongside it).
+                    if coordinate and self._bot_is_acting():
+                        disconnect()
+                        self._write_scraper_status(phase="idle - bot active")
+                        self._interruptible_sleep(60)
+                        continue
                     # 3. REACH pool: harvest post links for the main account to like
                     #    (re-check follow's low-water so reach tops up the instant follow
                     #    reached a day's worth within this same pass).
@@ -3843,7 +3891,8 @@ class Bot:
         urls, seen, stagnant = [], set(), 0
         end = time.monotonic() + 10
         while time.monotonic() < end and len(urls) < cap and stagnant < 5:
-            if self._stop_event.is_set() or self._story_stop.is_set():
+            if (self._stop_event.is_set() or self._story_stop.is_set()
+                    or (self._scraper_service and self._bot_is_acting())):
                 break
             try:
                 hrefs = page.eval_on_selector_all(
@@ -5273,6 +5322,7 @@ class Bot:
 
                     # --- ACTIVE: bring the browser up, verify the session, then work ---
                     self._set_acting(True)   # scraper pauses + closes its Chrome
+                    self._await_scraper_idle()   # wait for it to actually release the Pi first
                     page = ensure_connected()
                     # Session still valid? (only meaningful for non-CDP models)
                     if not conn["cdp"] and not self._is_logged_in(page):
