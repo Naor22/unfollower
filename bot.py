@@ -2845,6 +2845,7 @@ class Bot:
         long_min = float(scr.get("long_break_min", 60))
         long_max = float(scr.get("long_break_max", 180))
         rejected_log = _log_path("filter_rejected_log", "data/filter_rejected.log")
+        checked_log = _log_path("filter_checked_log", "data/filter_checked.log")
 
         done = self._follow_done_set(load_whitelist(), self._me)
         todo = read_scraper_todo()
@@ -2898,6 +2899,7 @@ class Bot:
             if reason is None:
                 result.append({"username": u, "source": c.get("source", ""), **meta})
                 result_set.add(u)
+                append_log(checked_log, f"{ts}\t{u}")   # vetted-KEPT series (analytics)
             else:
                 append_log(rejected_log, f"{ts}\t{u}\t{reason}")
             resolved.add(u)
