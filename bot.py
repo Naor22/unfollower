@@ -1544,6 +1544,36 @@ class Bot:
                 break
         return out[:cap]
 
+    def _scrape_profile_commenters(self, page, profile: str, cap: int = 600,
+                                   per_post: int = 60, on_collect=None) -> list[str]:
+        """Return the COMMENTERS on an influencer profile's recent posts - the active,
+        high-intent users engaging with that account. Same machinery as the hashtag
+        source: open the profile grid (_collect_post_links) -> sample recent posts ->
+        _scrape_commenters each. Public profiles only."""
+        profile = (profile or "").strip().lstrip("@").lower()
+        if not profile:
+            return []
+        self.state.update(status="scraping", phase_detail=f"opening @{profile}'s posts")
+        posts = self._collect_post_links(page, f"https://www.instagram.com/{profile}/", 12)
+        out: list[str] = []
+        seen: set[str] = set()
+        my = (os.getenv("IG_USERNAME") or "").lower()
+        for url in posts:
+            if self._stop_event.is_set() or len(out) >= cap:
+                break
+            try:
+                people = self._scrape_commenters(page, url, per_post)
+            except Exception:
+                people = []
+            for u in people:
+                if u == my or u in seen:
+                    continue
+                seen.add(u)
+                out.append(u)
+            if on_collect and on_collect(out):   # ingest + stop-check per post
+                break
+        return out[:cap]
+
     def _scrape_candidates(self, page, cfg, pool_read=None, pool_write=None,
                            extra_exclude=None, on_progress=None, status_cb=None) -> int:
         """Run every configured source, dedup against the follow done-set + the
@@ -1635,6 +1665,13 @@ class Bot:
         for prof in sources.get("profiles", []) or []:
             prof = _norm_profile(prof)
             if prof:
+                # Each influencer profile auto-feeds TWO seeds: its post COMMENTERS
+                # (active users - prioritized at follow time) AND its followers
+                # (backfill). The user adds the handle once; the scraper does both.
+                tasks.append({"label": f"commenters:@{prof}", "desc": f"@{prof} post commenters",
+                              "scrape": (lambda hook, p=prof:
+                                         self._scrape_profile_commenters(page, p, per_cap, on_collect=hook)),
+                              "exhausted": False})
                 tasks.append({"label": f"followers:{prof}", "desc": f"@{prof} followers",
                               "scrape": (lambda hook, p=prof:
                                          self._scrape_list(page, p, "followers", per_cap, on_collect=hook)),
@@ -4385,31 +4422,31 @@ class Bot:
         return done
 
     @staticmethod
-    def _source_rank(source: str) -> int:
-        """Lower = higher intent → followed first. Commenters/hashtag posters are
-        actively discussing the niche (best prospects); followers are passive."""
+    def _seed_tier_weight(source: str) -> int:
+        """Intent tier weight for follow priority (higher = preferred). Commenters are
+        ACTIVE users engaging in the niche -> top priority; hashtag posters / post
+        likers are engaged; followers are passive backfill."""
         s = (source or "").lower()
-        if s.startswith("commenters") or s.startswith("hashtag"):
-            return 0
-        if s.startswith("likers"):
-            return 1
-        if s.startswith("followers"):
+        if s.startswith("commenters"):
+            return 4
+        if s.startswith("hashtag") or s.startswith("likers"):
             return 2
-        return 3
+        return 1   # followers / other
 
     @staticmethod
     def _pick_diverse_candidate(eligible: list[dict], recent_seeds, max_streak: int) -> dict:
-        """Pick the next account to follow with maximum source spread (anti-bias).
+        """Pick the next account to follow: PRIORITY by source type, RANDOM within it.
 
-        Instead of walking a fixed priority order (which always led with the same
-        seed and biased follows toward one source), we pick a SEED at random and then
-        a random member of that seed. Choosing the seed first - then a member - gives
-        every source EQUAL odds regardless of how many candidates it contributed, so a
-        big follower list can't dominate. The recent-seed window still blocks a seed
+        Seeds are grouped into intent tiers (commenters > hashtag/likers > followers).
+        We pick a TIER weighted by `_seed_tier_weight` - so commenters are preferred
+        regardless of how many follower seeds exist - then a RANDOM seed in that tier,
+        then a RANDOM member. Type-priority gives active users the lead; the random
+        seed/member within a tier keeps any single source (e.g. one big follower or
+        commenter list) from dominating. The recent-seed window still blocks a seed
         that's appeared `max_streak` times in a row so runs stay mixed.
 
         `eligible` is the pending list; `recent_seeds` is the last few seeds picked
-        (most recent last). max_streak<=0 disables the streak guard (pure random)."""
+        (most recent last). max_streak<=0 disables the streak guard."""
         if not eligible:
             return None
         groups = {}
@@ -4421,8 +4458,15 @@ class Bot:
             avail = [s for s in seeds if recent.count(s) < max_streak]
             if avail:
                 seeds = avail
-        seed = random.choice(seeds)              # equal odds per source - kills the bias
-        return random.choice(groups[seed])       # random member within the chosen seed
+        # Bucket the available seeds by tier weight, pick a tier weighted (commenters
+        # favored), then random within - priority by type, no single-seed bias.
+        tiers: dict[int, list] = {}
+        for s in seeds:
+            tiers.setdefault(Bot._seed_tier_weight(s), []).append(s)
+        weights = list(tiers.keys())
+        chosen = random.choices(weights, weights=weights, k=1)[0]
+        seed = random.choice(tiers[chosen])
+        return random.choice(groups[seed])
 
     def _process_follow_day(self, page, cfg, max_actions=None) -> str:
         """Run one daily batch of follows pulled from the candidate pool.
