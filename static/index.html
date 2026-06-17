@@ -537,7 +537,7 @@
           <div class="acct-bar">
             <span class="acct"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><b x-text="fmtNum(state.account_followers)"></b> followers</span>
             <span class="acct"><b x-text="fmtNum(state.account_following)"></b> following</span>
-            <span class="acct" title="actions taken today (per-day safety caps)"><b x-text="state.day_follows || 0"></b> foll · <b x-text="state.day_unfollows || 0"></b> unf · <b x-text="state.day_likes || 0"></b> likes today</span>
+            <span class="acct" title="actions done today / per-day safety cap"><b x-text="(state.day_follows||0) + (state.day_follows_cap ? '/'+state.day_follows_cap : '')"></b> foll · <b x-text="(state.day_unfollows||0) + (state.day_unfollows_cap ? '/'+state.day_unfollows_cap : '')"></b> unf · <b x-text="(state.day_likes||0) + (state.day_likes_cap ? '/'+state.day_likes_cap : '')"></b> likes today</span>
           </div>
         </template>
         <div class="phase" x-text="state.phase_detail || ''" x-show="state.phase_detail"></div>

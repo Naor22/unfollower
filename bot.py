@@ -3436,13 +3436,23 @@ class Bot:
                 room = min(room, comb - used)
         return room
 
+    def _publish_day_counts(self, cfg) -> None:
+        """Push today's action counts AND their rolled caps to the dashboard, so the
+        top bar can show 'done / cap' for follows/unfollows/likes."""
+        L = self._ensure_ledger(cfg)
+        caps = L.get("caps", {}) or {}
+        self.state.update(day_follows=L.get("follows", 0),
+                          day_unfollows=L.get("unfollows", 0),
+                          day_likes=L.get("likes", 0),
+                          day_follows_cap=caps.get("follows", 0),
+                          day_unfollows_cap=caps.get("unfollows", 0),
+                          day_likes_cap=caps.get("likes", 0))
+
     def _day_record(self, kind, cfg, n=1) -> None:
         L = self._ensure_ledger(cfg)
         L[kind] = int(L.get(kind, 0)) + n
         self._save_ledger()
-        self.state.update(day_follows=L.get("follows", 0),
-                          day_unfollows=L.get("unfollows", 0),
-                          day_likes=L.get("likes", 0))
+        self._publish_day_counts(cfg)
 
     def _record_soft_block(self, cfg) -> int:
         L = self._ensure_ledger(cfg)
@@ -4945,6 +4955,7 @@ class Bot:
                     # cap or whitelist) take effect on the next batch.
                     day_cfg = load_config()
                     pacing = day_cfg["pacing"]
+                    self._publish_day_counts(day_cfg)   # top bar: done / cap (also re-rolls at midnight)
 
                     # --- ban-safety gates (NO browser needed → keep the bot's Chrome
                     #     CLOSED so the scraper gets the whole Pi) ---
