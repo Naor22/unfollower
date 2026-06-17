@@ -1725,6 +1725,12 @@ class Bot:
                     break
                 if task["exhausted"]:
                     continue
+                # Announce the source the moment this seed starts, so the scraper
+                # status names it during grid-load / first post too (not just on the
+                # per-batch ingest tick) - the status always reflects what's scraping.
+                if status_cb:
+                    status_cb(f"scraping {task['desc']}: backlog {pending_count()}")
+                    _last_status[0] = time.monotonic()
                 hook, state = _collector(task["label"], task["desc"])
                 try:
                     task["scrape"](hook)
