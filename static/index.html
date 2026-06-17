@@ -409,6 +409,14 @@
       .row-details { padding-left: 34px; }
       .feed-row { align-items: flex-start; }
       .feed-time { padding-top: 2px; }
+      /* Charts are secondary on a phone health-check - shorter so the page isn't
+         a wall of tall empty boxes; Chart.js reflows responsively. */
+      .chart-box { height: 200px; }
+      .ring { width: 46%; }              /* two pace rings per row on a phone */
+      .ring-dial { width: 92px; height: 92px; }
+      .ring-val b { font-size: 22px; }
+      .page-head h1 { font-size: 19px; }
+      .reach-stats { grid-template-columns: repeat(4, 1fr); }
     }
     /* Display face (Space Grotesk) on the brand mark, headings and the big
        tabular numbers - carries the 'instrument' personality; UI text stays Inter. */
@@ -2135,10 +2143,11 @@
 
         _chart(id, config) {
           if (typeof Chart === 'undefined') return;
+          Chart.defaults.font.family = "Inter, -apple-system, BlinkMacSystemFont, sans-serif";
           const el = document.getElementById(id);
           if (!el) return;
           if (this._charts[id]) { try { this._charts[id].destroy(); } catch (e) {} }
-          const muted = '#8a90a2', grid = 'rgba(255,255,255,0.06)';
+          const muted = '#8a93a3', grid = 'rgba(255,255,255,0.05)';
           config.options = Object.assign({
             responsive: true, maintainAspectRatio: false,
             plugins: { legend: { labels: { color: muted, boxWidth: 12, font: { size: 11 } } } },
@@ -2152,15 +2161,17 @@
 
         renderCharts() {
           const a = this.analytics; if (!a) return;
-          const P = '#2dd4bf', G = '#3fcf8e', R = '#ff5c7c', Y = '#ffb547', B = '#4aa8ff', M = '#9aa0b4';
+          // On-palette chart colors (match the token system): teal / success-green /
+          // danger-rose / warning-amber / info-cyan / muted. No off-brand blue.
+          const P = '#2dd4bf', G = '#34d399', R = '#fb7185', Y = '#f6c344', B = '#56b6c2', M = '#8a93a3';
           // Growth (followers + following over time)
           const gl = (a.growth || []);
           this._chart('chGrowth', {
             type: 'line',
             data: { labels: gl.map(p => (p.ts || '').slice(5, 16)),
               datasets: [
-                { label: 'Followers', data: gl.map(p => p.followers), borderColor: G, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
-                { label: 'Following', data: gl.map(p => p.following), borderColor: P, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+                { label: 'Followers', data: gl.map(p => p.followers), borderColor: P, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+                { label: 'Following', data: gl.map(p => p.following), borderColor: M, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
               ] },
           });
           // Daily actions (stacked bars)
@@ -2168,8 +2179,8 @@
           this._chart('chActions', {
             type: 'bar',
             data: { labels: dl, datasets: [
-              { label: 'Follows', data: d.map(x => x.follows), backgroundColor: G },
-              { label: 'Churned', data: d.map(x => x.churn), backgroundColor: P },
+              { label: 'Follows', data: d.map(x => x.follows), backgroundColor: P },
+              { label: 'Churned', data: d.map(x => x.churn), backgroundColor: R },
               { label: 'Unfollows', data: d.map(x => x.unfollows), backgroundColor: B },
               { label: 'Likes', data: d.map(x => x.likes), backgroundColor: Y },
             ] },
