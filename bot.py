@@ -3557,9 +3557,20 @@ class Bot:
     # keep_running re-runs), randomized ±jitter daily, so the account can't blow
     # past a safe daily volume the way per-batch caps allowed.
 
-    def _roll_daily_caps(self, cfg) -> dict:
+    @staticmethod
+    def _cap_bases(cfg) -> dict:
+        """The configured per-day base caps (pre-jitter). Used to detect when the
+        dashboard changed a limit so today's rolled caps can be re-rolled to match."""
         limits = cfg.get("limits", {}) or {}
-        jit = float(limits.get("daily_jitter", 0.3))
+        return {
+            "follows": int(limits.get("follows_per_day", 30) or 0),
+            "unfollows": int(limits.get("unfollows_per_day", 30) or 0),
+            "likes": int(limits.get("likes_per_day", 50) or 0),
+            "combined": int(limits.get("combined_per_day", 0) or 0),
+        }
+
+    def _roll_daily_caps(self, cfg) -> dict:
+        jit = float((cfg.get("limits", {}) or {}).get("daily_jitter", 0.3))
 
         def r(base):
             base = float(base or 0)
@@ -3567,15 +3578,11 @@ class Bot:
                 return 0
             return max(1, int(round(base * random.uniform(1 - jit, 1 + jit))))
 
-        return {
-            "follows": r(limits.get("follows_per_day", 30)),
-            "unfollows": r(limits.get("unfollows_per_day", 30)),
-            "likes": r(limits.get("likes_per_day", 50)),
-            "combined": r(limits.get("combined_per_day", 0)),   # 0 = no combined cap
-        }
+        return {k: r(v) for k, v in self._cap_bases(cfg).items()}
 
     def _ensure_ledger(self, cfg) -> dict:
         today = time.strftime("%Y-%m-%d")
+        bases = self._cap_bases(cfg)
         L = getattr(self, "_ledger", None)
         if L is None:
             try:
@@ -3585,12 +3592,17 @@ class Bot:
         if L.get("date") != today:
             L = {"date": today, "follows": 0, "unfollows": 0, "likes": 0,
                  "stories": 0, "soft_blocks": 0, "last_block_ts": 0,
-                 "follow_rests": 0, "caps": self._roll_daily_caps(cfg)}
+                 "follow_rests": 0, "caps": self._roll_daily_caps(cfg), "caps_base": bases}
             self._ledger = L
             self._save_ledger()
         else:
-            L.setdefault("caps", self._roll_daily_caps(cfg))
             self._ledger = L
+            # Re-roll today's caps if the configured limits changed (dashboard edit),
+            # so a lowered cap applies the SAME day instead of waiting for midnight.
+            if "caps" not in L or L.get("caps_base") != bases:
+                L["caps"] = self._roll_daily_caps(cfg)
+                L["caps_base"] = bases
+                self._save_ledger()
         return L
 
     def _save_ledger(self) -> None:
