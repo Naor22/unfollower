@@ -731,12 +731,46 @@ async def get_analytics():
     except Exception:
         pass
 
+    # throughput / speed: events per ACTIVE 30-min window. Idle time is excluded
+    # (a quiet overnight shouldn't drag the rate toward 0), so this reads as "while
+    # it's working, it does ~N per half hour". Also peak window + last-24h rate.
+    def _epochs(rows):
+        out = []
+        for r in rows:
+            t = bot.parse_log_ts(r["timestamp"] if isinstance(r, dict) else r)
+            if t is not None:
+                out.append(t)
+        return out
+
+    def rate_stats(epochs):
+        if not epochs:
+            return {"total": 0, "per_30m": 0, "peak_30m": 0,
+                    "active_windows": 0, "recent_per_30m": None}
+        buckets = _c.Counter(int(t // 1800) for t in epochs)
+        active = len(buckets)
+        now_b = int(time.time() // 1800)
+        recent = [v for b, v in buckets.items() if b > now_b - 48]   # last ~24h
+        return {
+            "total": sum(buckets.values()),
+            "per_30m": round(sum(buckets.values()) / active, 1),
+            "peak_30m": max(buckets.values()),
+            "active_windows": active,
+            "recent_per_30m": round(sum(recent) / len(recent), 1) if recent else None,
+        }
+
+    throughput = {
+        "vetted": rate_stats(_epochs(checked) + _epochs(rejected)),
+        "follows": rate_stats(_epochs(followed)),
+        "unfollows": rate_stats(_epochs(unfollowed) + _epochs(churned)),
+        "likes": rate_stats(_epochs(likes_ts)),
+    }
+
     return {
         "totals": totals, "rates": rates, "daily": daily_list, "growth": growth,
         "fail_reasons": reason_counts(f_failed + failed),
         "skip_reasons": reason_counts(f_skipped),
         "reject_reasons": reason_counts(rejected),
-        "runtime": runtime, "today": today,
+        "runtime": runtime, "today": today, "throughput": throughput,
     }
 
 
@@ -791,6 +825,30 @@ async def get_system():
     s["watchdog_threshold"] = float(wd.get("stuck_after_seconds", 600))
     s["autostart"] = bool((bot.load_config().get("server", {}) or {}).get("autostart"))
     return s
+
+
+@app.get("/api/pool/{kind}")
+async def get_pool(kind: str):
+    """Browseable pool contents for the dashboard's click-to-view list. `follow`
+    returns vetted candidates (each links to the profile); `reach` returns harvested
+    post links (each links to the post that'll be liked). Both carry the scrape
+    source so the list can show where each entry came from."""
+    if kind == "follow":
+        rows = [{"username": e["username"], "source": e.get("source", "") or "—",
+                 "link": f"https://www.instagram.com/{e['username']}/"}
+                for e in bot.read_follow_candidates()]
+        return {"kind": "follow", "count": len(rows), "rows": rows}
+    if kind == "reach":
+        rows = []
+        for e in bot.read_reach_pool():
+            u = e.get("username", "")
+            rows.append({
+                "username": u or "post",
+                "source": e.get("source") or e.get("tag", "") or "—",
+                "link": e.get("url") or (f"https://www.instagram.com/{u}/" if u else ""),
+            })
+        return {"kind": "reach", "count": len(rows), "rows": rows}
+    return {"kind": kind, "count": 0, "rows": []}
 
 
 @app.get("/api/candidates")

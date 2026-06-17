@@ -385,6 +385,14 @@
 
     .scrim { display: none; }
 
+    /* ---------- pool viewer modal ---------- */
+    .pool-backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .pool-modal { width: 100%; max-width: 560px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; display: flex; flex-direction: column; }
+    .pool-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+    .pool-head h3 { font-family: 'Space Grotesk', sans-serif; font-size: 17px; margin: 0; }
+    .pool-head p { color: var(--muted); font-size: 12px; margin: 2px 0 0; }
+    .pool-head .count-chip { margin-left: auto; flex: none; }
+
     /* ---------- mobile ---------- */
     @media (max-width: 860px) {
       .app { grid-template-columns: 1fr; }
@@ -733,7 +741,7 @@
 
           <!-- FOLLOW / MARKETING: pipeline + lifetime totals (today's pace is in the rings) -->
           <div class="stat-grid" x-show="isFollowMode()">
-            <div class="stat accent">
+            <div class="stat accent" style="cursor:pointer" @click="openPool('follow')" title="View the follow pool">
               <div class="label">Candidate pool</div>
               <div class="value" x-text="fmtNum(followTotals.pending || 0)"></div>
               <div class="sub" x-text="'ready · ' + fmtNum(followTotals.candidates || 0) + ' scraped'"></div>
@@ -748,7 +756,7 @@
               <div class="value warn" x-text="fmtNum((followTotals.churn_unfollowed || 0) + (totals.unfollowed || 0))"></div>
               <div class="sub" x-text="'+' + ((state.churn_unfollowed_count||0)+(state.unfollowed_count||0)) + ' this run'"></div>
             </div>
-            <div class="stat" x-show="config && config.engagement && config.engagement.reach_enabled">
+            <div class="stat" x-show="config && config.engagement && config.engagement.reach_enabled" style="cursor:pointer" @click="openPool('reach')" title="View the reach pool">
               <div class="label">Reach pool</div>
               <div class="value" x-text="fmtNum((isRunning ? state.reach_pool : followTotals.reach_pool) || followTotals.reach_pool || 0)"></div>
               <div class="sub">links to like</div>
@@ -1016,6 +1024,23 @@
                   <div class="ms"><div class="v bad" x-text="analytics.rates.reject_rate != null ? analytics.rates.reject_rate + '%' : '-'"></div><div class="l" x-text="'Rejected (' + analytics.totals.rejected + ')'"></div></div>
                 </div>
               </div>
+
+              <!-- throughput / speed -->
+              <template x-if="analytics.throughput">
+                <div class="card">
+                  <div class="card-title">Speed <span class="pill">per active 30 min</span></div>
+                  <div class="mini-stats">
+                    <template x-for="m in [{k:'vetted',l:'Vetted'},{k:'follows',l:'Follows'},{k:'unfollows',l:'Unfollows'},{k:'likes',l:'Likes'}]" :key="m.k">
+                      <div class="ms">
+                        <div class="v" x-text="speedTile(m.k).big"></div>
+                        <div class="l"><span x-text="m.l"></span> / 30m</div>
+                        <div class="l" style="opacity:.65;font-size:10px;margin-top:1px;" x-text="speedTile(m.k).sub"></div>
+                      </div>
+                    </template>
+                  </div>
+                  <p class="hint" style="margin-top:10px;">Average events per 30-minute window the bot/scraper was actually working (idle time excluded). <strong>Vetted</strong> is the scraper's profile-vetting throughput; <strong>peak</strong> is the busiest window, <strong>24h</strong> the recent rate.</p>
+                </div>
+              </template>
 
               <!-- runtime / reliability -->
               <div class="card">
@@ -1659,6 +1684,45 @@
     </div>
   </template>
 
+  <!-- pool viewer: click the Candidate/Reach pool tile to browse its contents -->
+  <template x-if="poolModal">
+    <div class="pool-backdrop" @click="poolModal=null">
+      <div class="pool-modal" @click.stop>
+        <div class="pool-head">
+          <div>
+            <h3 x-text="poolModal.kind === 'reach' ? 'Reach pool' : 'Follow pool'"></h3>
+            <p x-text="poolModal.kind === 'reach' ? 'Harvested posts to like — each links to the post' : 'Vetted, eligible accounts — each links to the profile'"></p>
+          </div>
+          <span class="count-chip" x-text="poolModal.loading ? '…' : (poolModal.count + ' in pool')"></span>
+          <button class="ghost icon" @click="poolModal=null" title="Close" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="toolbar" style="margin:0 0 8px;">
+          <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" placeholder="Filter by user or source…" x-model="poolFilter" />
+          </div>
+        </div>
+        <div class="list-scroll" style="max-height:60vh;">
+          <template x-if="poolModal.loading"><div class="empty"><div class="t">Loading…</div></div></template>
+          <template x-if="!poolModal.loading && poolFiltered().length === 0"><div class="empty"><div class="t">Pool is empty</div><div>It fills as the scraper runs.</div></div></template>
+          <template x-for="(row, i) in poolFiltered().slice(0, 2000)" :key="row.link + i">
+            <div class="list-row">
+              <a class="username" :href="row.link" target="_blank" rel="noopener"><span class="at">@</span><span x-text="row.username"></span></a>
+              <div class="grow"></div>
+              <span class="badge" x-text="row.source"></span>
+              <button class="ghost sm" @click="window.open(row.link, '_blank', 'noopener')" title="Open in a new tab">Open</button>
+            </div>
+          </template>
+          <template x-if="!poolModal.loading && poolFiltered().length > 2000">
+            <div class="field-hint" style="padding:12px;text-align:center;">Showing first 2000 — refine the filter to see more.</div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <script>
     // Tiny IndexedDB key/value store - used to remember the deploy folder handle
     // (FileSystemDirectoryHandle) across reloads so the toggles work without
@@ -1755,6 +1819,8 @@
         scraper: null,
         scraperBusy: false,
         clearBusy: false,
+        poolModal: null,
+        poolFilter: '',
         cpuHist: [],
         memHist: [],
         tempHist: [],
@@ -2231,6 +2297,35 @@
             this.analytics = an;
             this.$nextTick(() => this.renderCharts());
           } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        // Pool viewer: click a pool tile to browse its users + sources, each a link.
+        async openPool(kind) {
+          this.poolFilter = '';
+          this.poolModal = { kind, rows: [], count: 0, loading: true };
+          try {
+            const j = await this.fetch('/api/pool/' + kind);
+            this.poolModal = { kind, rows: j.rows || [], count: j.count || 0, loading: false };
+          } catch (e) {
+            this.poolModal = null;
+            this.showToast('Could not load the pool', 'error');
+          }
+        },
+        poolFiltered() {
+          if (!this.poolModal) return [];
+          const f = this.poolFilter.trim().toLowerCase();
+          if (!f) return this.poolModal.rows;
+          return this.poolModal.rows.filter(r =>
+            (r.username || '').toLowerCase().includes(f) || (r.source || '').toLowerCase().includes(f));
+        },
+
+        // One throughput tile: big = avg per active 30-min window; sub = peak + 24h rate.
+        speedTile(k) {
+          const t = (this.analytics && this.analytics.throughput) ? this.analytics.throughput[k] : null;
+          if (!t || !t.total) return { big: '–', sub: 'no activity yet' };
+          let sub = 'peak ' + t.peak_30m;
+          if (t.recent_per_30m != null) sub += ' · 24h ' + t.recent_per_30m;
+          return { big: t.per_30m, sub };
         },
 
         _chart(id, config) {
