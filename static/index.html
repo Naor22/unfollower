@@ -285,11 +285,6 @@
     .feed-row.is-phase .l1 { color: var(--muted); font-size: 13px; }
     .feed-main .l1 .u { font-family: var(--mono); color: var(--accent-2); }
     .feed-count { display: inline-block; margin-left: 7px; padding: 0 7px; border-radius: 99px; background: var(--surface-3); color: var(--muted); font-size: 10.5px; font-weight: 700; vertical-align: middle; }
-    /* intent chip: what the bot is TRYING to do mid-flow (before the outcome) */
-    .ibadge { display: inline-block; margin-right: 7px; padding: 1px 8px; border-radius: 99px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; vertical-align: middle; }
-    .ibadge.follow   { background: var(--success-bg); color: var(--success); }
-    .ibadge.unfollow { background: var(--danger-bg);  color: var(--danger); }
-    .ibadge.like     { background: var(--warning-bg); color: var(--warning); }
     .feed-main .l2 { font-size: 11.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .feed-main .l2-full { font-size: 11.5px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
     .feed-hist { margin-top: 6px; border-top: 1px solid var(--border-soft); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
@@ -785,7 +780,7 @@
                     </div>
                     <div class="feed-main">
                       <div class="l1">
-                        <template x-if="ev.lastKind === 'wait' && ev.intent"><span class="ibadge" :class="ev.intent" x-text="intentVerb(ev.intent)"></span></template><span x-text="ev.last"></span><template x-if="ev.username"> <a class="u" :href="'https://www.instagram.com/'+ev.username+'/'" target="_blank" rel="noopener" @click.stop x-text="'@'+ev.username"></a></template><template x-if="ev.actions && ev.actions.length > 1"><span class="feed-count" x-text="ev.actions.length"></span></template>
+                        <span x-text="ev.last"></span><template x-if="ev.username"> <a class="u" :href="'https://www.instagram.com/'+ev.username+'/'" target="_blank" rel="noopener" @click.stop x-text="'@'+ev.username"></a></template><template x-if="ev.actions && ev.actions.length > 1"><span class="feed-count" x-text="ev.actions.length"></span></template>
                       </div>
                       <div class="l2" x-show="!open && ev.detail" x-text="ev.detail"></div>
                       <div class="l2-full" x-show="open && ev.detail" x-cloak x-text="ev.detail"></div>
@@ -1678,6 +1673,7 @@
       kept:       '<polyline points="20 6 9 17 4 12"/>',
       churned:    '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
       story:      '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+      like:       '<path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3z"/><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>',
       phase:      '<circle cx="12" cy="12" r="3"/>',
       info:       '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
       error:      '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
@@ -1922,30 +1918,30 @@
               this.unfollowed.push(msg.data);
               this.totals.unfollowed = this.unfollowed.length;
               this._setFollowingStatus(msg.data.username, 'unfollowed');
-              this.pushActivity('unfollowed', msg.data, 'bad', 'Unfollowed', msg.data.note);
+              this.pushActivity('unfollowed', msg.data, 'good', 'Unfollowed', msg.data.note, 'unfollow');
             } else if (msg.type === 'failed') {
               this.failed.push(msg.data);
               this.totals.failed = this.failed.length;
               this._setFollowingStatus(msg.data.username, 'failed');
-              this.pushActivity('failed', msg.data, 'bad', 'Failed to unfollow', msg.data.reason);
+              this.pushActivity('failed', msg.data, 'bad', 'Failed to unfollow', msg.data.reason, 'unfollow');
             } else if (msg.type === 'skipped') {
               this.skipped.push(msg.data);
               this.totals.skipped = this.skipped.length;
               this._setFollowingStatus(msg.data.username, 'skipped');
-              this.pushActivity('skipped', msg.data, 'neutral', 'Skipped', msg.data.reason);
+              this.pushActivity('skipped', msg.data, 'neutral', 'Skipped', msg.data.reason, 'unfollow');
             } else if (msg.type === 'followed') {
               this.followed.push(msg.data);
               this.followTotals.followed = (this.followTotals.followed || 0) + 1;
               if (this.followTotals.pending > 0) this.followTotals.pending--;
-              this.pushActivity('followed', msg.data, 'good', 'Followed', msg.data.source);
+              this.pushActivity('followed', msg.data, 'good', 'Followed', msg.data.source, 'follow');
             } else if (msg.type === 'follow_skipped') {
               this.followSkipped.push(msg.data);
               this.followTotals.follow_skipped = (this.followTotals.follow_skipped || 0) + 1;
-              this.pushActivity('skipped', msg.data, 'neutral', 'Skipped', msg.data.reason);
+              this.pushActivity('skipped', msg.data, 'neutral', 'Skipped', msg.data.reason, 'follow');
             } else if (msg.type === 'follow_failed') {
               this.followFailed.push(msg.data);
               this.followTotals.follow_failed = (this.followTotals.follow_failed || 0) + 1;
-              this.pushActivity('failed', msg.data, 'bad', 'Failed to follow', msg.data.reason);
+              this.pushActivity('failed', msg.data, 'bad', 'Failed to follow', msg.data.reason, 'follow');
             } else if (msg.type === 'follow_kept') {
               this.followKept.push(msg.data);
               this.followTotals.follow_kept = (this.followTotals.follow_kept || 0) + 1;
@@ -1953,12 +1949,12 @@
             } else if (msg.type === 'churn_unfollowed') {
               this.churnUnfollowed.push(msg.data);
               this.followTotals.churn_unfollowed = (this.followTotals.churn_unfollowed || 0) + 1;
-              this.pushActivity('churned', msg.data, 'neutral', 'Churned (no follow-back)', null);
+              this.pushActivity('churned', msg.data, 'good', 'Churned (no follow-back)', null, 'unfollow');
             } else if (msg.type === 'step') {
               // One step of a flow - appended under its row (per-user or per-post via key).
-              this._addAction((msg.data.username || '').toLowerCase() || null, msg.data.label, '', msg.data.tone || 'neutral', 'wait', msg.data._time, msg.data.key);
+              this._addAction((msg.data.username || '').toLowerCase() || null, msg.data.label, '', msg.data.tone || 'neutral', 'wait', msg.data._time, msg.data.key, msg.data.intent);
             } else if (msg.type === 'story_viewed') {
-              this.pushActivity('story', msg.data, 'good', 'Reach', msg.data.detail || 'engaged');
+              this.pushActivity('story', msg.data, 'good', 'Reach', msg.data.detail || 'engaged', 'like');
             } else if (msg.type === 'source_discovered') {
               this.discoveredSources.push(msg.data);
               this.pushActivity('discovered', msg.data, 'good', 'Discovered source', msg.data.matched);
@@ -1980,7 +1976,6 @@
         },
 
         _nowTime() { return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); },
-        intentVerb(i) { return ({ follow: 'following', unfollow: 'unfollowing', like: 'liking' })[i] || i; },
 
         // Append an action. Account actions (with a username) are GROUPED into one
         // row per user (expand to see their full history); the row jumps to the top
@@ -1992,7 +1987,11 @@
         _addAction(uname, label, detail, tone, iconKey, time, key, intent) {
           const gkey = key || uname;
           const action = { label, detail: detail || '', time: time || this._nowTime(), tone };
-          const icon = ICONS[iconKey] || ICONS.skipped;
+          // Icon = the ACTION (follow person+ / unfollow person- / like thumbs-up) so
+          // it's clear at a glance even mid-flow; color (.feed-ic tone) = the OUTCOME
+          // (good=green / bad=red / neutral=gray). Non-action events keep their own icon.
+          const intentIcon = { follow: 'followed', unfollow: 'unfollowed', like: 'like' }[intent];
+          const icon = ICONS[intentIcon] || ICONS[iconKey] || ICONS.skipped;
           if (gkey) {
             const i = this.activity.findIndex(e => e.gkey === gkey);
             const g = i >= 0 ? this.activity.splice(i, 1)[0]
@@ -2014,8 +2013,9 @@
         },
 
         // A concrete account action (followed/unfollowed/skipped/…) - grouped by key.
-        pushActivity(kind, data, tone, title, detail) {
-          this._addAction((data.username || '').toLowerCase() || null, title, detail, tone, kind, data._time, data.key);
+        // `intent` (follow|unfollow|like) drives the icon; `tone` drives the color.
+        pushActivity(kind, data, tone, title, detail, intent) {
+          this._addAction((data.username || '').toLowerCase() || null, title, detail, tone, kind, data._time, data.key, intent);
         },
 
         // A bot log line. Phase/status narrations are NOT fed here (they live in the
@@ -2033,15 +2033,15 @@
           const m = {
             log:               () => this._addAction(null, d.msg, '', d.level === 'error' ? 'bad' : 'info', d.level === 'error' ? 'error' : 'info', t),
             step:              () => this._addAction(u, d.label, '', d.tone || 'neutral', 'wait', t, d.key, d.intent),
-            unfollowed:        () => this._addAction(u, 'Unfollowed', d.note || '', 'bad', 'unfollowed', t),
-            failed:            () => this._addAction(u, 'Failed to unfollow', d.reason || '', 'bad', 'failed', t),
-            skipped:           () => this._addAction(u, 'Skipped', d.reason || '', 'neutral', 'skipped', t),
-            followed:          () => this._addAction(u, 'Followed', d.source || '', 'good', 'followed', t),
-            follow_skipped:    () => this._addAction(u, 'Skipped', d.reason || '', 'neutral', 'skipped', t),
-            follow_failed:     () => this._addAction(u, 'Failed to follow', d.reason || '', 'bad', 'failed', t),
+            unfollowed:        () => this._addAction(u, 'Unfollowed', d.note || '', 'good', 'unfollowed', t, null, 'unfollow'),
+            failed:            () => this._addAction(u, 'Failed to unfollow', d.reason || '', 'bad', 'failed', t, null, 'unfollow'),
+            skipped:           () => this._addAction(u, 'Skipped', d.reason || '', 'neutral', 'skipped', t, null, 'unfollow'),
+            followed:          () => this._addAction(u, 'Followed', d.source || '', 'good', 'followed', t, null, 'follow'),
+            follow_skipped:    () => this._addAction(u, 'Skipped', d.reason || '', 'neutral', 'skipped', t, null, 'follow'),
+            follow_failed:     () => this._addAction(u, 'Failed to follow', d.reason || '', 'bad', 'failed', t, null, 'follow'),
             follow_kept:       () => this._addAction(u, 'Kept (followed back)', '', 'good', 'kept', t),
-            churn_unfollowed:  () => this._addAction(u, 'Churned (no follow-back)', '', 'neutral', 'churned', t),
-            story_viewed:      () => this._addAction(u, 'Reach', d.detail || 'engaged', 'good', 'story', t, d.key),
+            churn_unfollowed:  () => this._addAction(u, 'Churned (no follow-back)', '', 'good', 'churned', t, null, 'unfollow'),
+            story_viewed:      () => this._addAction(u, 'Reach', d.detail || 'engaged', 'good', 'story', t, d.key, 'like'),
             source_discovered: () => this._addAction(u, 'Discovered source', d.matched || '', 'good', 'discovered', t),
           }[msg.type];
           if (m) m();
