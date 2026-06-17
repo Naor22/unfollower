@@ -1518,8 +1518,9 @@
                   <div class="form-grid">
                     <div><label>Reach source</label>
                       <select x-model="config.engagement.reach_source">
-                        <option value="hashtags">Hashtags - like public posts under niche tags (recommended)</option>
-                        <option value="pool">Candidate pool - engage scraped accounts (mostly private)</option>
+                        <option value="prospects">Prospects - like commenters &amp; influencer-followers' photos (recommended)</option>
+                        <option value="hashtags">Hashtags - like public posts under niche tags (reaches the posters)</option>
+                        <option value="pool">Candidate pool - engage scraped accounts (legacy)</option>
                       </select>
                     </div>
                     <div><label>Reach daily cap (likes/day)</label><input type="number" x-model.number="config.limits.likes_per_day" /></div>

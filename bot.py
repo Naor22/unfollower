@@ -32,6 +32,7 @@ SESSION_PATH = DATA_DIR / "session.json"
 FOLLOWING_CACHE = DATA_DIR / "following.json"
 FOLLOW_CANDIDATES = DATA_DIR / "follow_candidates.json"   # ELIGIBLE result list (bot consumes)
 SCRAPER_TODO = DATA_DIR / "scraper_todo.json"            # scraper's raw backlog to vet (input)
+REACH_TODO = DATA_DIR / "reach_todo.json"                # reach-prospect raw backlog to vet (prospects mode)
 REACH_POOL = DATA_DIR / "reach_pool.json"                # harvested post links for reach liking (bot consumes)
 DISCOVERED_SOURCES = DATA_DIR / "discovered_sources.json"
 ACCOUNT_STATS = DATA_DIR / "account_stats.json"
@@ -670,6 +671,29 @@ def read_scraper_todo() -> list[dict]:
 
 def write_scraper_todo(entries: list[dict]) -> None:
     _write_candidates_atomic(SCRAPER_TODO, entries)
+
+
+def read_reach_todo() -> list[dict]:
+    """The reach harvester's private backlog of raw prospect accounts awaiting vetting
+    (prospects mode) - same shape as the scraper todo."""
+    if not REACH_TODO.exists():
+        return []
+    try:
+        raw = json.loads(REACH_TODO.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append({"username": item.lstrip("@").lower(), "source": ""})
+        elif isinstance(item, dict) and item.get("username"):
+            out.append({"username": str(item["username"]).lstrip("@").lower(),
+                        "source": item.get("source", "")})
+    return out
+
+
+def write_reach_todo(entries: list[dict]) -> None:
+    _write_candidates_atomic(REACH_TODO, entries)
 
 
 def read_filter_rejected_log() -> list[dict]:
@@ -2639,11 +2663,17 @@ class Bot:
 
     def _reach_harvest_on(self, cfg) -> bool:
         """True when the burner should fill the reach pool and the main account should
-        consume-only: reach enabled + external harvest + at least one hashtag to harvest."""
+        consume-only. Needs reach enabled + external harvest, plus something to harvest
+        FROM: in 'prospects' mode that's any scrape source (profiles/hashtags/posts);
+        in 'hashtags' mode it's at least one reach hashtag."""
         eng = cfg.get("engagement", {}) or {}
-        return bool(eng.get("reach_enabled", False)
-                    and eng.get("reach_external_harvest", True)
-                    and self._reach_tags(cfg))
+        if not (eng.get("reach_enabled", False) and eng.get("reach_external_harvest", True)):
+            return False
+        if (eng.get("reach_source") or "hashtags").lower() == "prospects":
+            srcs = (cfg.get("targeting", {}) or {}).get("sources", {}) or {}
+            return bool((srcs.get("profiles") or []) or (srcs.get("hashtags") or [])
+                        or (srcs.get("post_commenters") or []) or (srcs.get("post_likers") or []))
+        return bool(self._reach_tags(cfg))
 
     def _pools_warm(self, cfg, mode):
         """Unified pool gate: (warm, detail). The bot stays fully idle (browser closed)
@@ -3046,8 +3076,13 @@ class Bot:
                         if reach_build_high and self._pool_ready(day_cfg) >= follow_low:
                             reach_target = reach_high
                         if reach_ready < reach_target:
+                            rsrc = ((day_cfg.get("engagement", {}) or {}).get("reach_source")
+                                    or "hashtags").lower()
                             try:
-                                self._harvest_reach_links(page, day_cfg, target=reach_target)
+                                if rsrc == "prospects":
+                                    self._harvest_reach_prospects(page, day_cfg, target=reach_target)
+                                else:
+                                    self._harvest_reach_links(page, day_cfg, target=reach_target)
                             except Exception as e:
                                 self.state.emit("log", {"level": "error", "msg": f"reach harvest failed: {e}"})
                             if self._stop_event.is_set():
@@ -3993,6 +4028,95 @@ class Bot:
                 self._jitter(lo, hi)
         write_reach_pool(pool)
 
+    def _harvest_reach_prospects(self, page, cfg, target: int = None) -> None:
+        """Burner-side (prospects mode): fill the reach pool with PROSPECTS' post links -
+        the commenters/influencer-followers behind the niche - so the main account's likes
+        land on real prospects instead of the clinics who post under hashtags. Scrapes
+        usernames from the SAME sources as follow into a separate reach TODO, vets each
+        PUBLIC (mandatory) + the follow filters, grabs one recent post URL, and stores
+        {url, username, source} in reach_pool. Independent of the follow pool. Yields the
+        Pi the instant the bot starts acting; the main account consume path is unchanged."""
+        if not self._reach_harvest_on(cfg):
+            return
+        targeting = cfg.get("targeting", {}) or {}
+        scr = cfg.get("scraper", {}) or {}
+        coordinate = scr.get("coordinate_with_bot", True)
+        mult = int(scr.get("reach_pool_mult", scr.get("follow_pool_mult", 5)) or 5)
+        if target is None:
+            likes_cap = int((cfg.get("limits", {}) or {}).get("likes_per_day", 100) or 100)
+            target = max(1, likes_cap * mult)
+        # Mandatory public + has-posts on top of the configured follow filters, so a like
+        # can actually land (private accounts have no visible posts to like).
+        filters = dict(targeting.get("filters", {}) or {})
+        filters["skip_private"] = True
+        filters["skip_no_posts"] = True
+        lo, hi = float(scr.get("filter_delay_min", 1)), float(scr.get("filter_delay_max", 3))
+
+        liked = self._reach_liked_set()
+        pool = [e for e in read_reach_pool() if e.get("url") not in liked]
+        have_users = {(e.get("username") or "").lower() for e in pool if e.get("username")}
+        have_urls = {e.get("url") for e in pool}
+        done = self._follow_done_set(load_whitelist(), self._me)
+        self._write_scraper_status(phase=f"harvesting reach prospects ({len(pool)}/{target})")
+        if len(pool) >= target:
+            return
+
+        # 1) Collect raw prospect usernames into the SEPARATE reach todo (same sources +
+        #    diversity as the follow scrape; excludes the done-set + accounts already pooled).
+        try:
+            self._scrape_candidates(
+                page, cfg,
+                pool_read=read_reach_todo, pool_write=write_reach_todo,
+                extra_exclude=(have_users | done),
+                status_cb=lambda ph: self._write_scraper_status(phase=ph))
+        except Exception as e:
+            self.state.emit("log", {"level": "error", "msg": f"reach prospect scrape failed: {e}"})
+        if self._stop_event.is_set() or (coordinate and self._bot_is_acting()):
+            return
+
+        # 2) Vet each prospect (public + filters) and grab one recent post URL to like.
+        resolved: list[str] = []
+        for c in read_reach_todo():
+            if self._stop_event.is_set() or len(pool) >= target:
+                break
+            if coordinate and self._bot_is_acting():   # bot woke up → release the Pi
+                break
+            u = (c.get("username") or "").lower()
+            if not u or u in have_users or u in done:
+                resolved.append(u)
+                continue
+            self._write_scraper_status(phase=f"vetting reach prospect @{u} ({len(pool)}/{target})")
+            try:
+                reason, _meta = self._filter_one(page, u, filters)
+            except Exception as e:
+                self.state.emit("log", {"level": "error", "msg": f"reach vet @{u} failed: {e}"})
+                continue   # transient - leave in todo, retry next pass
+            resolved.append(u)        # vetted (kept or rejected) → drop from todo
+            if reason is not None:
+                continue              # private / filtered out
+            try:
+                posts = self._collect_post_links(page, f"https://www.instagram.com/{u}/", 1)
+            except Exception:
+                posts = []
+            url = posts[0] if posts else None
+            if not url or url in have_urls or url in liked:
+                continue
+            have_urls.add(url)
+            have_users.add(u)
+            pool.append({"url": url, "username": u,
+                         "source": c.get("source", "") or "reach", "added_at": int(time.time())})
+            write_reach_pool(pool)    # sole writer, atomic
+            self.state.update(
+                reach_scraped=self.state.snapshot().get("reach_scraped", 0) + 1,
+                reach_pool=len(pool))
+            self._jitter(lo, hi)
+
+        if resolved:   # drop vetted/excluded usernames from the todo; keep the rest to retry
+            rset = set(resolved)
+            write_reach_todo([c for c in read_reach_todo()
+                              if (c.get("username") or "").lower() not in rset])
+        write_reach_pool(pool)
+
     def _reach_liked_set(self) -> set:
         path = _log_path("reach_liked_log", "data/reach_liked.log")
         out = set()
@@ -4022,10 +4146,12 @@ class Bot:
         that the scraper/burner fills - the main account never loads a gated explore/
         hashtag grid itself, so likes keep flowing at the daily target from cache.
 
-        Legacy fallback (reach_external_harvest off): refill an in-memory pool by
-        scraping ONE random hashtag grid on the main account, rarely + with backoff
-        (IG gates these pages when hit too often)."""
-        if eng.get("reach_external_harvest", True):
+        Legacy fallback (reach_external_harvest off, hashtags mode only): refill an
+        in-memory pool by scraping ONE random hashtag grid on the main account, rarely +
+        with backoff. 'prospects' mode is burner-only (the main account never scrapes
+        prospects itself), so it always consumes the harvested pool."""
+        if (eng.get("reach_external_harvest", True)
+                or (eng.get("reach_source") or "").lower() == "prospects"):
             return self._next_reach_post_from_pool(eng)
         sources = (load_config().get("targeting", {}) or {}).get("sources", {}) or {}
         tags = [t.strip().lstrip("#").lower()
@@ -4171,14 +4297,15 @@ class Bot:
 
     def _reach_one(self, page) -> str:
         """One reach action, per `engagement.reach_source`:
-        'hashtags' (default - like public posts under niche hashtags) or 'pool'
-        (legacy - engage candidate-pool members)."""
+        'prospects' (like a recent post of commenters/influencer-followers) or 'hashtags'
+        (like public posts under niche hashtags) - both consume the burner-harvested
+        reach_pool of post URLs - or 'pool' (legacy - engage candidate-pool members)."""
         cfg = load_config()
         eng = cfg.get("engagement", {}) or {}
         cap = int((cfg.get("limits", {}) or {}).get("likes_per_day", 100) or 0)
         if cap and self._story_today >= cap:
             return "cap"
-        if (eng.get("reach_source") or "hashtags").lower() == "hashtags":
+        if (eng.get("reach_source") or "hashtags").lower() in ("hashtags", "prospects"):
             url = self._next_reach_post(page, eng)
             if not url:
                 return ""
