@@ -682,57 +682,71 @@
             </div>
           </template>
 
-          <!-- UNFOLLOW stats -->
+          <!-- Followers + growth sparkline (shown in every mode when we have counts) -->
+          <template x-if="state.account_followers != null">
+            <div class="stat-grid" style="margin-bottom:13px;">
+              <div class="stat accent" style="grid-column: span 2;">
+                <div class="label">Followers</div>
+                <div class="value" x-text="fmtNum(state.account_followers)"></div>
+                <div class="sub" x-text="acctNet()"></div>
+                <svg class="spark" x-show="acctSpark" viewBox="0 0 100 38" preserveAspectRatio="none"><polyline :points="acctSpark"></polyline></svg>
+              </div>
+              <div class="stat">
+                <div class="label">Following</div>
+                <div class="value" x-text="fmtNum(state.account_following)"></div>
+              </div>
+            </div>
+          </template>
+
+          <!-- UNFOLLOW: queue + lifetime totals (today's pace is in the rings above) -->
           <div class="stat-grid" x-show="!isFollowMode()">
-            <div class="stat accent">
-              <div class="label">Following (cached)</div>
-              <div class="value" x-text="totals.following || 0"></div>
+            <div class="stat">
+              <div class="label">Still to review</div>
+              <div class="value" x-text="fmtNum(totals.following || 0)"></div>
+              <div class="sub">cached following list</div>
             </div>
             <div class="stat good">
-              <div class="label">Unfollowed · session</div>
-              <div class="value good" x-text="state.unfollowed_count || 0"></div>
-              <div class="sub" x-text="(totals.unfollowed || 0) + ' all-time'"></div>
+              <div class="label">Unfollowed · all&#8209;time</div>
+              <div class="value good" x-text="fmtNum(totals.unfollowed || 0)"></div>
+              <div class="sub" x-text="'+' + (state.unfollowed_count || 0) + ' this run'"></div>
+            </div>
+            <div class="stat warn">
+              <div class="label">Protected (whitelist)</div>
+              <div class="value warn" x-text="totals.whitelisted || 0"></div>
             </div>
             <div class="stat bad">
               <div class="label">Failed</div>
-              <div class="value bad" x-text="state.failed_count || 0"></div>
-              <div class="sub" x-text="(totals.failed || 0) + ' in log'"></div>
-            </div>
-            <div class="stat">
-              <div class="label">Skipped</div>
-              <div class="value" x-text="totals.skipped || 0"></div>
-            </div>
-            <div class="stat warn">
-              <div class="label">Whitelisted</div>
-              <div class="value warn" x-text="totals.whitelisted || 0"></div>
+              <div class="value bad" x-text="totals.failed || 0"></div>
+              <div class="sub">in log</div>
             </div>
           </div>
 
-          <!-- FOLLOW / CHURN stats -->
+          <!-- FOLLOW / MARKETING: pipeline + lifetime totals (today's pace is in the rings) -->
           <div class="stat-grid" x-show="isFollowMode()">
             <div class="stat accent">
-              <div class="label">Pending to follow</div>
-              <div class="value" x-text="followTotals.pending || 0"></div>
-              <div class="sub" x-text="(followTotals.candidates || 0) + ' in pool'"></div>
+              <div class="label">Candidate pool</div>
+              <div class="value" x-text="fmtNum(followTotals.pending || 0)"></div>
+              <div class="sub" x-text="'ready · ' + fmtNum(followTotals.candidates || 0) + ' scraped'"></div>
             </div>
             <div class="stat good">
-              <div class="label">Followed · session</div>
-              <div class="value good" x-text="state.followed_count || 0"></div>
-              <div class="sub" x-text="(followTotals.followed || 0) + ' all-time'"></div>
-            </div>
-            <div class="stat bad">
-              <div class="label">Follow failed</div>
-              <div class="value bad" x-text="state.follow_failed_count || 0"></div>
-              <div class="sub" x-text="(followTotals.follow_failed || 0) + ' in log'"></div>
-            </div>
-            <div class="stat">
-              <div class="label">Skipped</div>
-              <div class="value" x-text="followTotals.follow_skipped || 0"></div>
+              <div class="label">Followed · all&#8209;time</div>
+              <div class="value good" x-text="fmtNum(followTotals.followed || 0)"></div>
+              <div class="sub" x-text="'+' + (state.followed_count || 0) + ' this run'"></div>
             </div>
             <div class="stat warn" x-show="config && config.mode === 'marketing'">
-              <div class="label">Unfollowed · session</div>
-              <div class="value warn" x-text="(state.churn_unfollowed_count || 0) + (state.unfollowed_count || 0)"></div>
-              <div class="sub" x-text="(followTotals.churn_unfollowed || 0) + ' churned all-time'"></div>
+              <div class="label">Unfollowed · all&#8209;time</div>
+              <div class="value warn" x-text="fmtNum((followTotals.churn_unfollowed || 0) + (totals.unfollowed || 0))"></div>
+              <div class="sub" x-text="'+' + ((state.churn_unfollowed_count||0)+(state.unfollowed_count||0)) + ' this run'"></div>
+            </div>
+            <div class="stat" x-show="config && config.engagement && config.engagement.reach_enabled">
+              <div class="label">Reach pool</div>
+              <div class="value" x-text="fmtNum((isRunning ? state.reach_pool : followTotals.reach_pool) || followTotals.reach_pool || 0)"></div>
+              <div class="sub">links to like</div>
+            </div>
+            <div class="stat bad">
+              <div class="label">Follow failures · run</div>
+              <div class="value bad" x-text="state.follow_failed_count || 0"></div>
+              <div class="sub" x-text="(followTotals.follow_failed || 0) + ' in log'"></div>
             </div>
           </div>
 
@@ -1025,14 +1039,14 @@
               <div class="chart-grid">
                 <div class="card"><div class="card-title">Follower growth</div><div class="chart-box"><canvas id="chGrowth"></canvas></div></div>
                 <div class="card"><div class="card-title">Daily actions</div><div class="chart-box"><canvas id="chActions"></canvas></div></div>
-                <div class="card"><div class="card-title">Scraper: vetted vs rejected / day</div><div class="chart-box"><canvas id="chScraper"></canvas></div></div>
-                <div class="card"><div class="card-title">Follow-back funnel</div><div class="chart-box"><canvas id="chFunnel"></canvas></div></div>
-                <div class="card"><div class="card-title">Top follow failures</div><div class="chart-box"><canvas id="chFails"></canvas></div></div>
-                <div class="card"><div class="card-title">Why candidates were rejected</div><div class="chart-box"><canvas id="chRejects"></canvas></div></div>
+                <div class="card" x-show="isFollowMode()"><div class="card-title">Scraper: vetted vs rejected / day</div><div class="chart-box"><canvas id="chScraper"></canvas></div></div>
+                <div class="card" x-show="isFollowMode()"><div class="card-title">Follow-back funnel</div><div class="chart-box"><canvas id="chFunnel"></canvas></div></div>
+                <div class="card" x-show="isFollowMode()"><div class="card-title">Top follow failures</div><div class="chart-box"><canvas id="chFails"></canvas></div></div>
+                <div class="card" x-show="isFollowMode()"><div class="card-title">Why candidates were rejected</div><div class="chart-box"><canvas id="chRejects"></canvas></div></div>
               </div>
 
               <!-- per-source conversion table -->
-              <div class="card">
+              <div class="card" x-show="isFollowMode()">
                 <div class="card-title">Per-source conversion <span class="pill">follow-back rate at churn</span></div>
                 <div class="list-scroll">
                   <template x-if="sourceAnalytics.length === 0"><div class="empty"><div class="t">No source data yet</div><div class="s">Fills in once follows reach the churn review.</div></div></template>
@@ -1071,12 +1085,20 @@
         <div x-show="tab==='followed'" x-transition.opacity>
           <div class="page-head"><h1>Followed</h1><p>From <code>data/followed.log</code> · newest first.</p></div>
           <div class="card">
+            <div class="toolbar">
+              <select x-model="followedSourceFilter" style="max-width:300px;">
+                <option value="">All sources</option>
+                <template x-for="s in followedSources()" :key="s"><option :value="s" x-text="s"></option></template>
+              </select>
+              <div class="grow"></div>
+              <span class="count-chip" x-text="followedFiltered().length + ' / ' + (followed.length || 0) + ' shown'"></span>
+            </div>
             <div class="list-scroll">
-              <template x-if="followed.length === 0"><div class="empty"><div class="t">No follows logged yet</div></div></template>
-              <template x-for="(row, i) in followed.slice().reverse()" :key="row.timestamp + row.username + i">
+              <template x-if="followedFiltered().length === 0"><div class="empty"><div class="t" x-text="followed.length ? 'No follows from this source' : 'No follows logged yet'"></div></div></template>
+              <template x-for="(row, i) in followedFiltered()" :key="row.timestamp + row.username + i">
                 <div class="list-row">
                   <a class="username" :href="'https://www.instagram.com/' + row.username + '/'" target="_blank" rel="noopener"><span class="at">@</span><span x-text="row.username"></span></a>
-                  <template x-if="row.source"><span class="note" x-text="'(' + row.source + ')'"></span></template>
+                  <template x-if="row.source"><span class="note" x-text="row.source"></span></template>
                   <div class="grow"></div>
                   <span class="timestamp" x-text="row.timestamp"></span>
                 </div>
@@ -1683,6 +1705,9 @@
         candidatesText: '',
         candidatesCount: 0,
         configTab: 'limits',
+        acctHistory: [],
+        acctSpark: '',
+        followedSourceFilter: '',
         sourcesProfilesText: '',
         sourcesPostsText: '',
         sourcesCommentersText: '',
@@ -1749,6 +1774,7 @@
             this.loadWhitelist(),
             this.loadCredentials(),
             this.loadDiscovered(),
+            this.loadAccountHistory(),
           ]);
           // Refresh account counts on open (no-op while running / if just fetched).
           this.fetch('/api/account/refresh', { method: 'POST' }).catch(() => {});
@@ -2233,6 +2259,36 @@
           return cap > 0 ? Math.min(1, done / cap) : 0;
         },
         paceOffset(kind) { return (295.31 * (1 - this.paceFrac(kind))).toFixed(1); },
+        // Account followers sparkline (Overview). Fetches a downsampled series and
+        // builds an SVG polyline in a 100x38 box; acctNet() is the net change.
+        async loadAccountHistory() {
+          try {
+            const r = await this.fetch('/api/account/history');
+            const pts = (r.points || []).map(p => p.f).filter(v => v != null);
+            this.acctHistory = pts;
+            if (pts.length < 2) { this.acctSpark = ''; return; }
+            const min = Math.min(...pts), max = Math.max(...pts), span = (max - min) || 1, n = pts.length;
+            this.acctSpark = pts.map((v, i) =>
+              ((i / (n - 1)) * 100).toFixed(1) + ',' + (36 - ((v - min) / span) * 32).toFixed(1)).join(' ');
+          } catch (e) { this.acctSpark = ''; }
+        },
+        acctNet() {
+          const p = this.acctHistory;
+          if (!p || p.length < 2) return 'tracking growth…';
+          const net = p[p.length - 1] - p[0];
+          return (net >= 0 ? '▲ +' : '▼ ') + net + ' since tracking';
+        },
+        // Followed-list source filter: distinct seeds + the filtered (reversed) rows.
+        followedSources() {
+          const s = new Set();
+          (this.followed || []).forEach(r => { if (r.source) s.add(r.source); });
+          return Array.from(s).sort();
+        },
+        followedFiltered() {
+          let rows = (this.followed || []).slice().reverse();
+          if (this.followedSourceFilter) rows = rows.filter(r => r.source === this.followedSourceFilter);
+          return rows;
+        },
 
         async changeMode() {
           // The sidebar shows every list in all modes now, so there's no tab to reset -

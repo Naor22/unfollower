@@ -763,6 +763,18 @@ async def refresh_account():
     return {"ok": True, "started": True}
 
 
+@app.get("/api/account/history")
+async def account_history():
+    """Lightweight follower/following time-series for the Overview sparkline
+    (downsampled). The full series with timestamps is on /api/analytics."""
+    rows = bot.read_account_history()
+    pts = [{"f": r["followers"], "g": r["following"]} for r in rows]
+    if len(pts) > 60:
+        step = len(pts) // 60 + 1
+        pts = pts[::step]
+    return {"points": pts}
+
+
 @app.get("/api/system")
 async def get_system():
     """Host metrics for the System page, plus bot liveness for the watchdog UI."""
