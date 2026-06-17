@@ -233,6 +233,10 @@ class LogClear(BaseModel):
     log: str
 
 
+class DataClear(BaseModel):
+    target: str
+
+
 class DeployFile(BaseModel):
     name: str
     content: str
@@ -876,6 +880,32 @@ async def clear_log(payload: LogClear):
     if path.exists():
         path.write_text("", encoding="utf-8")
     return {"ok": True, "cleared": cleared, "pruned": pruned}
+
+
+# Rebuildable pools the System page can wipe on demand (the scraper refills them).
+# Permanent record logs (followed/unfollowed/etc.) are intentionally NOT here.
+_CLEARABLE = {
+    "reach_pool":        ("reach pool",       bot.read_reach_pool,        bot.write_reach_pool),
+    "reach_todo":        ("reach backlog",    bot.read_reach_todo,        bot.write_reach_todo),
+    "follow_candidates": ("candidate pool",   bot.read_follow_candidates, bot.write_follow_candidates),
+    "scraper_todo":      ("scrape backlog",   bot.read_scraper_todo,      bot.write_scraper_todo),
+}
+
+
+@app.post("/api/data/clear")
+async def clear_data(payload: DataClear):
+    """Wipe a rebuildable pool (reach pool / backlogs / candidate pool). Safe: the
+    scraper refills them; permanent logs are not clearable here."""
+    entry = _CLEARABLE.get(payload.target)
+    if not entry:
+        raise HTTPException(400, f"unknown target '{payload.target}'")
+    label, reader, writer = entry
+    try:
+        removed = len(reader())
+    except Exception:
+        removed = 0
+    writer([])
+    return {"ok": True, "label": label, "removed": removed}
 
 
 # ---------- scraper service (server-managed subprocess) ----------

@@ -1284,6 +1284,17 @@
           </div>
 
           <div class="card" style="margin-top:18px;">
+            <div class="card-title">Clear pools <span class="pill">rebuilt by the scraper</span></div>
+            <p class="hint" style="margin-bottom:12px;">Wipe a cached pool to rebuild it from scratch - e.g. after changing your sources or switching reach mode. The scraper refills them on its next pass; your permanent logs (followed / unfollowed / churned) are untouched.</p>
+            <div class="btn-row">
+              <button class="ghost" @click="clearPool('reach_pool')" :disabled="clearBusy">Clear reach pool</button>
+              <button class="ghost" @click="clearPool('reach_todo')" :disabled="clearBusy">Clear reach backlog</button>
+              <button class="ghost" @click="clearPool('follow_candidates')" :disabled="clearBusy">Clear candidate pool</button>
+              <button class="ghost" @click="clearPool('scraper_todo')" :disabled="clearBusy">Clear scrape backlog</button>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:18px;">
             <div class="card-title">Deploy <span class="pill">pull latest from GitHub</span>
               <div style="flex:1"></div>
               <button class="ghost sm" @click="loadDeployStatus()" :disabled="deployBusy">Check</button>
@@ -1729,6 +1740,7 @@
         system: null,
         scraper: null,
         scraperBusy: false,
+        clearBusy: false,
         cpuHist: [],
         memHist: [],
         tempHist: [],
@@ -1819,6 +1831,20 @@
             await this.loadScraper();
           } catch (e) { this.showToast(e.message, 'error'); }
           finally { this.scraperBusy = false; }
+        },
+
+        async clearPool(target) {
+          const names = { reach_pool: 'reach pool', reach_todo: 'reach backlog',
+                          follow_candidates: 'candidate pool', scraper_todo: 'scrape backlog' };
+          if (!confirm('Clear the ' + (names[target] || target) + '? It rebuilds as the scraper runs.')) return;
+          this.clearBusy = true;
+          try {
+            const j = await this.fetch('/api/data/clear', { method: 'POST',
+              headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }) });
+            this.showToast('Cleared ' + (j.label || target) + ' (' + (j.removed || 0) + ' removed)', 'success');
+            this.loadScraper();
+          } catch (e) { this.showToast(e.message, 'error'); }
+          finally { this.clearBusy = false; }
         },
         stopSysPolling() {
           if (this._sysTimer) { clearInterval(this._sysTimer); this._sysTimer = null; }
