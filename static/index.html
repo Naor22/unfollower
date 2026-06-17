@@ -575,7 +575,7 @@
         <template x-if="state.next_action_at && nextActionSeconds() > 0">
           <div class="countdown"><span x-text="countdownLabel().toLowerCase()"></span> <b x-text="(_tick, countdownText())"></b></div>
         </template>
-        <div class="mini-progress" x-show="state.total_targets > 0" :title="state.progress_index + ' / ' + state.total_targets">
+        <div class="mini-progress" x-show="state.total_targets > 0 && (!config || config.mode !== 'marketing')" :title="state.progress_index + ' / ' + state.total_targets">
           <div :style="'width:' + progressPercent() + '%'"></div>
         </div>
 
@@ -642,9 +642,16 @@
                 <div class="cd-label" x-text="countdownLabel()"></div>
                 <div class="cd-value" :class="{ idle: !(_tick, countdownText()) }" x-text="(_tick, countdownText()) || (isRunning ? 'working…' : 'idle')"></div>
               </div>
-              <div class="hero-prog" x-show="state.total_targets > 0">
-                <div class="pl"><span>Progress</span><b x-text="(state.progress_index||0)+' / '+state.total_targets+'  ·  '+progressPercent()+'%'"></b></div>
-                <div class="hero-bar"><div :style="'width:'+progressPercent()+'%'"></div></div>
+              <div class="hero-prog" x-show="state.current_target || (state.total_targets > 0 && (!config || config.mode !== 'marketing'))">
+                <!-- Linear progress only makes sense for a single flow (unfollow list /
+                     follow batch). Marketing interleaves follow+unfollow+trim, so the rings
+                     below ARE the progress; the linear bar would jump around. -->
+                <template x-if="state.total_targets > 0 && (!config || config.mode !== 'marketing')">
+                  <div>
+                    <div class="pl"><span>Progress</span><b x-text="(state.progress_index||0)+' / '+state.total_targets+'  ·  '+progressPercent()+'%'"></b></div>
+                    <div class="hero-bar"><div :style="'width:'+progressPercent()+'%'"></div></div>
+                  </div>
+                </template>
                 <template x-if="state.current_target">
                   <div class="hero-target">current target <a :href="'https://www.instagram.com/'+state.current_target+'/'" target="_blank" rel="noopener" x-text="'@'+state.current_target"></a></div>
                 </template>
