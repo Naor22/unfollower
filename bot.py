@@ -2640,10 +2640,16 @@ class Bot:
             return True, ""   # scraper off → don't wait on pools it isn't filling
         warm, parts = True, []
         if mode in ("follow", "marketing") and scr.get("external", False):
-            cap = int((cfg.get("limits", {}) or {}).get("follows_per_day", 30))
+            # Low-water = only what the bot still needs TODAY (remaining follow room),
+            # NOT a full daily cap. So once it's mid-day the bot keeps consuming a
+            # shrinking pool as long as there's enough left to finish today's follows,
+            # instead of yielding to the scraper (which must never run while the bot is
+            # working). It only waits when the pool can't even cover the remaining room.
+            fc = int((cfg.get("limits", {}) or {}).get("follows_per_day", 30)) or 30
+            need = min(fc, max(1, self._day_room("follows", cfg)))
             ready = self._pool_ready(cfg)
-            parts.append(f"follow {ready}/{cap}")
-            if ready < cap:
+            parts.append(f"follow {ready}/{need}")
+            if ready < need:
                 warm = False
         if self._reach_harvest_on(cfg):
             need = self._reach_likes_left(cfg)
