@@ -4877,8 +4877,11 @@ class Bot:
                 append_log(failed_log, f"{ts}\t{u}\tchurn:{result}")
                 self._run_skip.add(u)   # don't re-attempt this run (poison guard)
                 consecutive_errors += 1
+                # Churn IS an unfollow, so count it toward the run's unfollow-fail
+                # tally (the Overview failures tile shows follow / unfollow).
+                self.state.update(failed_count=self.state.snapshot().get("failed_count", 0) + 1,
+                                  last_message=f"churn failed @{u}: {result}")
                 self.state.emit("follow_failed", {"timestamp": ts, "username": u, "reason": f"churn:{result}"})
-                self.state.update(last_message=f"churn failed @{u}: {result}")
                 if consecutive_errors >= 5:
                     return "block"
                 self._jitter(1.0, 3.0)

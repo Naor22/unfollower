@@ -219,6 +219,7 @@
     .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; display: flex; align-items: center; gap: 7px; }
     .stat .label svg { width: 14px; height: 14px; stroke: currentColor; opacity: 0.7; }
     .stat .value { font-size: 28px; font-weight: 700; margin-top: 7px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+    .stat .value .vsep { color: var(--muted-2); font-weight: 400; font-size: 0.62em; margin: 0 8px; vertical-align: middle; }
     .stat .value.good { color: var(--success); }
     .stat .value.bad  { color: var(--danger); }
     .stat .value.warn { color: var(--warning); }
@@ -749,9 +750,14 @@
               <div class="sub">links to like</div>
             </div>
             <div class="stat bad">
-              <div class="label">Follow failures · run</div>
-              <div class="value bad" x-text="state.follow_failed_count || 0"></div>
-              <div class="sub" x-text="(followTotals.follow_failed || 0) + ' in log'"></div>
+              <div class="label">Failures · run</div>
+              <template x-if="config && config.mode === 'marketing'">
+                <div class="value bad"><span x-text="state.follow_failed_count || 0"></span><span class="vsep">/</span><span x-text="state.failed_count || 0"></span></div>
+              </template>
+              <template x-if="!config || config.mode !== 'marketing'">
+                <div class="value bad" x-text="state.follow_failed_count || 0"></div>
+              </template>
+              <div class="sub" x-text="(config && config.mode === 'marketing') ? 'follow / unfollow' : ((followTotals.follow_failed || 0) + ' in log')"></div>
             </div>
           </div>
 
