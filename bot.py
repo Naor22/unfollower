@@ -79,10 +79,14 @@ class BotState:
     # periodically re-synced). None until the first fetch.
     account_followers: Optional[int] = None
     account_following: Optional[int] = None
-    # today's per-calendar-day action totals (ban-safety ledger)
+    # today's per-calendar-day action totals + their rolled caps (ban-safety ledger).
+    # Declared here so asdict() serializes them to the dashboard top bar.
     day_follows: int = 0
     day_unfollows: int = 0
     day_likes: int = 0
+    day_follows_cap: int = 0
+    day_unfollows_cap: int = 0
+    day_likes_cap: int = 0
 
 
 class StateManager:
