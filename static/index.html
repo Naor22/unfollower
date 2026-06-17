@@ -1586,10 +1586,14 @@
                     <div><label>Reach pool high-water (&times; likes/day)</label><input type="number" x-model.number="config.scraper.reach_pool_mult" /></div>
                     <div><label>Scraper Chrome CDP endpoint</label><input type="text" x-model="config.scraper.cdp_endpoint" /></div>
                     <div><label>Scrape pass gap (sec)</label><input type="number" x-model.number="config.scraper.idle_seconds" /></div>
-                    <div><label>Filter delay min (s)</label><input type="number" x-model.number="config.scraper.filter_delay_min" /></div>
-                    <div><label>Filter delay max (s)</label><input type="number" x-model.number="config.scraper.filter_delay_max" /></div>
+                    <div><label>Filter delay min (s)</label><input type="number" step="0.1" x-model.number="config.scraper.filter_delay_min" /></div>
+                    <div><label>Filter delay max (s)</label><input type="number" step="0.1" x-model.number="config.scraper.filter_delay_max" /></div>
+                    <div><label>Long break every N profiles</label><input type="number" x-model.number="config.scraper.long_break_every" /></div>
+                    <div><label>Long break min (s)</label><input type="number" x-model.number="config.scraper.long_break_min" /></div>
+                    <div><label>Long break max (s)</label><input type="number" x-model.number="config.scraper.long_break_max" /></div>
                   </div>
                   <p class="hint" style="margin-top:8px;">Runs as a separate service on a 2nd Chrome (burner). It fills the pools during the bot's dead-time and stops once each pool reaches its high-water. Live status under System &rarr; Scraper service.</p>
+                  <p class="hint" style="margin-top:6px;">Vetting speed = <b>filter delay</b> between profiles + a <b>long break</b> every N. The burner only <i>views</i> profiles (no follows), so these can be brisker than the bot's pacing. Faster, still safe: filter delay ~0.5&ndash;1.2s, long break every ~80 for 30&ndash;90s.</p>
                 </div>
               </div>
 
@@ -2383,7 +2387,7 @@
             C.targeting.discovery = Object.assign({ enabled: false, keywords: [], negative_keywords: [], min_followers: 5000, max_followers: 500000 }, C.targeting.discovery || {});
             A('engagement', { reach_enabled: true, reach_source: 'hashtags', reach_view_story: true, reach_hashtags: [], reach_cadence_min: 1, reach_cadence_max: 4, reach_cadence_fallback: 5, reach_like_posts: 1, on_follow_view_story: true, on_follow_like_posts: 1 });
             A('marketing', { unfollow_after_days: 2, keep_followers_back: false, also_trim_following: false, list_trim_cap: 40, ratio_unfollows: 5, ratio_follows: 4 });
-            A('scraper', { enabled: false, keep_running: false, coordinate_with_bot: true, idle_recheck_min: 15, idle_recheck_max: 30, follow_pool_mult: 5, reach_pool_mult: 5, cdp_endpoint: '', idle_seconds: 600, filter_delay_min: 1, filter_delay_max: 3 });
+            A('scraper', { enabled: false, keep_running: false, coordinate_with_bot: true, idle_recheck_min: 15, idle_recheck_max: 30, follow_pool_mult: 5, reach_pool_mult: 5, cdp_endpoint: '', idle_seconds: 600, filter_delay_min: 1, filter_delay_max: 3, long_break_every: 40, long_break_min: 60, long_break_max: 180 });
             A('behavior', { use_following_cache: true, warmup_browse_seconds: 20, account_resync_every: 40, unfollow_give_up_after: 3 });
             this.discoveryKeywordsText = (C.targeting.discovery.keywords || []).join('\n');
             this.discoveryNegativeText = (C.targeting.discovery.negative_keywords || []).join('\n');
