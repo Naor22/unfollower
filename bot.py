@@ -3991,6 +3991,30 @@ class Bot:
             self._interruptible_sleep(random.uniform(1.0, 2.0))
         return urls[:cap]
 
+    def _first_post_link_on_page(self, page) -> Optional[str]:
+        """Return the first post/reel URL from the profile page ALREADY loaded in `page`
+        (no navigation). Used to grab a reach prospect's recent post during the same load
+        that vetted them, instead of re-opening the profile. Polls briefly (~3s) for a
+        lazily-rendered grid; the grid anchors exist even with images blocked. Returns
+        None if no post link shows up (caller can fall back to _collect_post_links)."""
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end:
+            if (self._stop_event.is_set() or self._story_stop.is_set()
+                    or (self._scraper_service and self._bot_is_acting())):
+                break
+            try:
+                hrefs = page.eval_on_selector_all(
+                    'a[href*="/p/"], a[href*="/reel/"]',
+                    'els => els.map(e => e.getAttribute("href"))')
+            except Exception:
+                hrefs = []
+            for h in hrefs or []:
+                if not h:
+                    continue
+                return h if h.startswith("http") else f"https://www.instagram.com{h}"
+            self._interruptible_sleep(random.uniform(0.6, 1.0))
+        return None
+
     def _hashtag_post_urls(self, page, tag: str, cap: int = 60) -> list[str]:
         """Public post URLs for #tag. Tries the hashtag grid first, then the keyword
         search results page as a fallback (IG renders these differently and one
@@ -4133,11 +4157,16 @@ class Bot:
             resolved.append(u)        # vetted (kept or rejected) → drop from todo
             if reason is not None:
                 continue              # private / filtered out
+            # _filter_one just loaded this profile - grab the recent post link from that
+            # same page (no re-navigation). Fall back to a fresh load only if the grid
+            # didn't render in time.
             try:
-                posts = self._collect_post_links(page, f"https://www.instagram.com/{u}/", 1)
+                url = self._first_post_link_on_page(page)
+                if not url:
+                    posts = self._collect_post_links(page, f"https://www.instagram.com/{u}/", 1)
+                    url = posts[0] if posts else None
             except Exception:
-                posts = []
-            url = posts[0] if posts else None
+                url = None
             if not url or url in have_urls or url in liked:
                 continue
             have_urls.add(url)
