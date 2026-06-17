@@ -9,46 +9,52 @@
   <title>unfollower</title>
 
   <!-- PWA / add-to-home-screen: launch fullscreen standalone with a dark, themed status bar -->
-  <meta name="theme-color" content="#090a0f" />
+  <meta name="theme-color" content="#0b0d12" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="unfollower" />
-  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%237c6cff'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M120 134v-12a26 26 0 0 0-26-26H56a26 26 0 0 0-26 26v12'/%3E%3Ccircle cx='75' cy='62' r='26'/%3E%3Cpath d='M150 134v-12a26 26 0 0 0-20-25'/%3E%3C/g%3E%3C/svg%3E" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%232dd4bf'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M120 134v-12a26 26 0 0 0-26-26H56a26 26 0 0 0-26 26v12'/%3E%3Ccircle cx='75' cy='62' r='26'/%3E%3Cpath d='M150 134v-12a26 26 0 0 0-20-25'/%3E%3C/g%3E%3C/svg%3E" />
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script defer src="https://unpkg.com/alpinejs@3.14.7/dist/cdn.min.js"></script>
+  <!-- Type: Space Grotesk (display/numbers) · Inter (UI) · JetBrains Mono (data).
+       System-stack fallbacks in --font-* so it still renders if the Pi is offline. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg:        #090a0f;
-      --bg-grad:   radial-gradient(1200px 600px at 80% -10%, rgba(124,108,255,0.10), transparent 60%),
-                   radial-gradient(900px 500px at -10% 110%, rgba(124,108,255,0.06), transparent 55%);
-      --surface:   #111320;
-      --surface-2: #161a28;
-      --surface-3: #1e2333;
-      --hover:     #232a3d;
-      --border:    #232838;
-      --border-soft:#1b2030;
-      --text:      #f1f3fa;
-      --muted:     #8b93a9;
-      --muted-2:   #5a6177;
-      --accent:    #7c6cff;
-      --accent-2:  #9d86ff;
-      --accent-ink:#ffffff;
-      --accent-glow: rgba(124,108,255,0.45);
-      --success:   #36d399;
-      --success-bg: rgba(54,211,153,0.14);
-      --warning:   #fbbf24;
-      --warning-bg: rgba(251,191,36,0.14);
+      --bg:        #0a0c11;
+      --bg-grad:   radial-gradient(1100px 520px at 88% -12%, rgba(45,212,191,0.06), transparent 60%);
+      --surface:   #12151d;
+      --surface-2: #171b24;
+      --surface-3: #1e232f;
+      --hover:     #222834;
+      --border:    #242a36;
+      --border-soft:#191e28;
+      --text:      #eef1f6;
+      --muted:     #8a93a3;
+      --muted-2:   #59616f;
+      --accent:    #2dd4bf;
+      --accent-2:  #5eead4;
+      --accent-ink:#06231f;
+      --accent-glow: rgba(45,212,191,0.40);
+      --success:   #34d399;
+      --success-bg: rgba(52,211,153,0.13);
+      --warning:   #f6c344;
+      --warning-bg: rgba(246,195,68,0.13);
       --danger:    #fb7185;
-      --danger-bg: rgba(251,113,133,0.14);
-      --info:      #60a5fa;
-      --info-bg:   rgba(96,165,250,0.16);
-      --sidebar-w: 244px;
-      --radius:    14px;
-      --radius-sm: 9px;
-      --shadow:    0 8px 30px rgba(0,0,0,0.35);
-      --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, monospace;
+      --danger-bg: rgba(251,113,133,0.13);
+      --info:      #56b6c2;
+      --info-bg:   rgba(86,182,194,0.15);
+      --sidebar-w: 248px;
+      --radius:    12px;
+      --radius-sm: 8px;
+      --shadow:    0 10px 34px rgba(0,0,0,0.40);
+      --font-display: "Space Grotesk", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "SF Mono", Menlo, monospace;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -56,7 +62,7 @@
       width: 100%; max-width: 100%; overflow-x: hidden;
       background: var(--bg); background-image: var(--bg-grad); background-attachment: fixed;
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif;
+      font-family: var(--font-ui);
       font-size: 14px; line-height: 1.55;
       -webkit-font-smoothing: antialiased;
       /* Stop iOS Safari from auto-inflating text in tall blocks (the live-activity
@@ -81,11 +87,11 @@
     button:active:not(:disabled) { transform: translateY(1px); }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     button.primary {
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      border-color: transparent; color: var(--accent-ink); font-weight: 600;
-      box-shadow: 0 2px 14px var(--accent-glow);
+      background: var(--accent);
+      border-color: transparent; color: var(--accent-ink); font-weight: 700;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset, 0 4px 16px var(--accent-glow);
     }
-    button.primary:hover:not(:disabled) { box-shadow: 0 4px 20px var(--accent-glow); filter: brightness(1.07); background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+    button.primary:hover:not(:disabled) { background: var(--accent-2); box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset, 0 6px 22px var(--accent-glow); }
     button.success { background: var(--success); border-color: transparent; color: #06281c; font-weight: 600; }
     button.danger  { background: var(--danger-bg); border-color: rgba(251,113,133,0.4); color: var(--danger); }
     button.danger:hover:not(:disabled) { background: rgba(251,113,133,0.22); }
@@ -101,7 +107,7 @@
       border: 1px solid var(--border); padding: 9px 11px; border-radius: var(--radius-sm); width: 100%;
       transition: border-color .15s, box-shadow .15s;
     }
-    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124,108,255,0.18); }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(45,212,191,0.18); }
     select { cursor: pointer; appearance: none;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b93a9' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
       background-repeat: no-repeat; background-position: right 11px center; padding-right: 32px; }
@@ -116,7 +122,7 @@
     .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
     .switch .track { width: 40px; height: 23px; border-radius: 99px; background: var(--surface-3); border: 1px solid var(--border); transition: background .18s, border-color .18s; flex: none; }
     .switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 17px; height: 17px; border-radius: 50%; background: var(--muted); transition: transform .18s, background .18s; }
-    .switch input:checked + .track { background: rgba(124,108,255,0.35); border-color: var(--accent); }
+    .switch input:checked + .track { background: rgba(45,212,191,0.35); border-color: var(--accent); }
     .switch input:checked + .track::after { transform: translateX(17px); background: var(--accent-2); }
     .switch .switch-label { font-size: 13px; color: var(--text); text-transform: none; letter-spacing: normal; font-weight: 500; margin: 0; }
 
@@ -148,10 +154,10 @@
     }
     .nav-item svg { width: 17px; height: 17px; flex: none; stroke: currentColor; opacity: 0.85; }
     .nav-item:hover { background: var(--surface-2); color: var(--text); border-color: transparent; }
-    .nav-item.active { background: rgba(124,108,255,0.14); color: #fff; border-color: rgba(124,108,255,0.35); }
+    .nav-item.active { background: rgba(45,212,191,0.14); color: #fff; border-color: rgba(45,212,191,0.35); }
     .nav-item.active svg { opacity: 1; color: var(--accent-2); }
     .nav-item .count { margin-left: auto; font-size: 11px; color: var(--muted); background: var(--surface-2); padding: 1px 8px; border-radius: 99px; font-variant-numeric: tabular-nums; }
-    .nav-item.active .count { background: rgba(124,108,255,0.25); color: var(--accent-2); }
+    .nav-item.active .count { background: rgba(45,212,191,0.25); color: var(--accent-2); }
     .sidebar-foot { margin-top: auto; padding-top: 12px; font-size: 11px; color: var(--muted-2); display: flex; align-items: center; gap: 8px; }
     .ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
     .ws-dot.on { background: var(--success); box-shadow: 0 0 8px rgba(54,211,153,0.7); }
@@ -175,7 +181,7 @@
     .dot.stopping { background: var(--warning); animation: pulse 0.8s ease-in-out infinite; }
     .dot.error { background: var(--danger); box-shadow: 0 0 10px rgba(251,113,133,0.7); }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-    .mode-tag { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 99px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; background: rgba(124,108,255,0.16); color: var(--accent-2); border: 1px solid rgba(124,108,255,0.3); }
+    .mode-tag { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 99px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; background: rgba(45,212,191,0.16); color: var(--accent-2); border: 1px solid rgba(45,212,191,0.3); }
     .phase { color: var(--muted); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .acct-bar { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .acct-bar .acct { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border-radius: 99px; font-size: 12px; color: var(--muted); background: var(--surface); border: 1px solid var(--border); white-space: nowrap; }
@@ -226,7 +232,7 @@
 
     /* live-status hero */
     .hero { position: relative; overflow: hidden; }
-    .hero::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .3s; background: radial-gradient(600px 200px at 0% 0%, rgba(124,108,255,0.10), transparent 70%); }
+    .hero::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .3s; background: radial-gradient(600px 200px at 0% 0%, rgba(45,212,191,0.10), transparent 70%); }
     .hero.active::after { opacity: 1; }
     .hero-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
     .status-pill.big { font-size: 14px; padding: 8px 16px; }
@@ -319,7 +325,7 @@
     .list-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border-soft); transition: background .12s; }
     .list-row:last-child { border-bottom: none; }
     .list-row:hover { background: var(--surface); }
-    .list-row.current { background: rgba(124,108,255,0.1); }
+    .list-row.current { background: rgba(45,212,191,0.1); }
     /* Username takes the slack and truncates with an ellipsis so a long handle
        never forces the row (and the whole list) to scroll sideways. */
     .list-row .username { font-family: var(--mono); font-size: 13px; display: block; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -404,6 +410,12 @@
       .feed-row { align-items: flex-start; }
       .feed-time { padding-top: 2px; }
     }
+    /* Display face (Space Grotesk) on the brand mark, headings and the big
+       tabular numbers - carries the 'instrument' personality; UI text stays Inter. */
+    .brand .name, .page-head h1, .stat .value, .countdown-box .cd-value,
+    .mini-stats .ms .v, .reach-stats .rs-n, .status-pill.big {
+      font-family: var(--font-display); letter-spacing: -0.02em;
+    }
   </style>
 </head>
 <body x-data="app()" x-init="init()">
@@ -428,8 +440,9 @@
           <span>Overview</span>
         </button>
 
-        <!-- Lists - always shown so the menu never changes between modes -->
-        <div class="nav-group">
+        <!-- Lists are MODE-SCOPED: only the current mode's lists show, so the sidebar
+             only ever offers what's relevant to what the bot is doing. -->
+        <div class="nav-group" x-show="config && config.mode === 'unfollow'" x-cloak>
           <div class="heading">Unfollow</div>
           <button class="nav-item" :class="{ active: tab==='following' }" @click="go('following')">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11h-6"/></svg>
@@ -449,12 +462,8 @@
           </button>
         </div>
 
-        <div class="nav-group">
-          <div class="heading">Growth</div>
-          <button class="nav-item" :class="{ active: tab==='sources' }" @click="go('sources')">
-            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            <span>Sources</span>
-          </button>
+        <div class="nav-group" x-show="isFollowMode()" x-cloak>
+          <div class="heading" x-text="config && config.mode === 'marketing' ? 'Marketing' : 'Growth'"></div>
           <button class="nav-item" :class="{ active: tab==='candidates' }" @click="go('candidates')">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
             <span>Candidates</span><span class="count" x-text="followTotals.pending || 0"></span>
@@ -471,9 +480,9 @@
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
             <span>Failed</span><span class="count" x-text="followTotals.follow_failed || 0"></span>
           </button>
-          <button class="nav-item" :class="{ active: tab==='churn' }" @click="go('churn')">
+          <button class="nav-item" x-show="config && config.mode === 'marketing'" :class="{ active: tab==='churn' }" @click="go('churn')">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            <span>Marketing</span><span class="count" x-text="followTotals.churn_unfollowed || 0"></span>
+            <span>Churned</span><span class="count" x-text="followTotals.churn_unfollowed || 0"></span>
           </button>
           <button class="nav-item" :class="{ active: tab==='discovered' }" @click="go('discovered')">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -498,14 +507,6 @@
           <button class="nav-item" :class="{ active: tab==='config' }" @click="go('config')">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
             <span>Config</span>
-          </button>
-          <button class="nav-item" :class="{ active: tab==='whitelist' }" @click="go('whitelist')">
-            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
-            <span>Whitelist</span><span class="count" x-text="whitelistAll().length"></span>
-          </button>
-          <button class="nav-item" :class="{ active: tab==='credentials' }" @click="go('credentials')">
-            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-            <span>Credentials</span>
           </button>
         </div>
       </nav>
@@ -2114,7 +2115,7 @@
 
         renderCharts() {
           const a = this.analytics; if (!a) return;
-          const P = '#7c6cff', G = '#3fcf8e', R = '#ff5c7c', Y = '#ffb547', B = '#4aa8ff', M = '#9aa0b4';
+          const P = '#2dd4bf', G = '#3fcf8e', R = '#ff5c7c', Y = '#ffb547', B = '#4aa8ff', M = '#9aa0b4';
           // Growth (followers + following over time)
           const gl = (a.growth || []);
           this._chart('chGrowth', {
