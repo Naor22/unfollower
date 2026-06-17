@@ -1618,7 +1618,9 @@
                   <div class="form-grid">
                     <div><label>Warmup browse (s)</label><input type="number" x-model.number="config.behavior.warmup_browse_seconds" /></div>
                     <div><label>Account re-sync every N actions</label><input type="number" x-model.number="config.behavior.account_resync_every" /></div>
+                    <div><label>Give up unfollow after N fails</label><input type="number" x-model.number="config.behavior.unfollow_give_up_after" /></div>
                   </div>
+                  <p class="hint" style="margin-top:8px;">A "poison" account that fails to unfollow this many times (Instagram's missing-button bug) is permanently skipped, so it isn't retried every run.</p>
                 </div>
               </div>
 
@@ -2354,6 +2356,7 @@
             A('engagement', { reach_enabled: true, reach_source: 'hashtags', reach_view_story: true, reach_hashtags: [], reach_cadence_min: 1, reach_cadence_max: 4, reach_cadence_fallback: 5, reach_like_posts: 1, on_follow_view_story: true, on_follow_like_posts: 1 });
             A('marketing', { unfollow_after_days: 2, keep_followers_back: false, also_trim_following: false, list_trim_cap: 40, ratio_unfollows: 5, ratio_follows: 4 });
             A('scraper', { enabled: false, external: false, keep_running: false, coordinate_with_bot: true, idle_recheck_min: 15, idle_recheck_max: 30, follow_pool_mult: 5, reach_pool_mult: 5, cdp_endpoint: '', idle_seconds: 600, filter_delay_min: 1, filter_delay_max: 3 });
+            A('behavior', { use_following_cache: true, warmup_browse_seconds: 20, account_resync_every: 40, unfollow_give_up_after: 3 });
             this.discoveryKeywordsText = (C.targeting.discovery.keywords || []).join('\n');
             this.discoveryNegativeText = (C.targeting.discovery.negative_keywords || []).join('\n');
             C.watchdog = Object.assign({ enabled: false, stuck_after_seconds: 600, min_restart_interval_seconds: 900 }, C.watchdog || {});

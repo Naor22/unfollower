@@ -4457,6 +4457,10 @@ class Bot:
         whitelist = load_whitelist()
         done_set = {row["username"].lower() for row in read_unfollowed_log()}
         done_set |= {row["username"].lower() for row in read_skipped_log()}
+        # Permanently give up on 'poison' accounts that keep failing to unfollow (IG
+        # missing-button bug) so they aren't retried every run and slow the bot.
+        give_up_after = int((cfg.get("behavior", {}) or {}).get("unfollow_give_up_after", 3))
+        done_set |= self._give_up_set(read_failed_log(), give_up_after)
         targets = [u for u in following if u not in whitelist and u not in done_set
                    and u not in self._run_skip]
 
@@ -4608,6 +4612,24 @@ class Bot:
         if my_username:
             done.add(my_username.lower())
         return done
+
+    @staticmethod
+    def _give_up_set(rows, threshold: int, reason_prefix: Optional[str] = None) -> set:
+        """Usernames that have FAILED >= `threshold` times in a failure log (optionally
+        only failures whose reason starts with `reason_prefix`). These are 'poison'
+        accounts - usually IG's missing-unfollow-button bug - that fail the whole
+        fallback chain every run; we stop retrying them so they don't waste a minute
+        each and slow the bot. Persisted via the log, so it survives restarts."""
+        if threshold <= 0:
+            return set()
+        counts: dict = {}
+        for r in rows:
+            if reason_prefix and not str(r.get("reason") or "").startswith(reason_prefix):
+                continue
+            u = (r.get("username") or "").lower()
+            if u:
+                counts[u] = counts.get(u, 0) + 1
+        return {u for u, n in counts.items() if n >= threshold}
 
     @staticmethod
     def _seed_tier_weight(source: str) -> int:
@@ -4992,6 +5014,11 @@ class Bot:
         resolved = {r["username"].lower() for r in read_follow_kept_log()}
         resolved |= {r["username"].lower() for r in read_churn_unfollowed_log()}
         whitelist = load_whitelist()
+        # Permanently give up on 'poison' accounts that have failed to unfollow this many
+        # times (IG missing-button bug) - persisted in the log, so they're never retried
+        # across runs and stop wasting a minute each.
+        give_up_after = int((cfg.get("behavior", {}) or {}).get("unfollow_give_up_after", 3))
+        gave_up = self._give_up_set(read_follow_failed_log(), give_up_after, reason_prefix="churn:")
         # username -> source, for per-source conversion analytics recorded below.
         source_map = {r["username"].lower(): r.get("source", "")
                       for r in read_followed_log()}
@@ -5001,7 +5028,8 @@ class Bot:
         due, seen = [], set()
         for row in read_followed_log():
             u = row["username"].lower()
-            if u in resolved or u in whitelist or u in seen or u in self._run_skip:
+            if (u in resolved or u in whitelist or u in seen or u in self._run_skip
+                    or u in gave_up):
                 continue
             ts = parse_log_ts(row["timestamp"])
             if ts is None or (now - ts) < cutoff:
@@ -5010,7 +5038,8 @@ class Bot:
             due.append(u)
 
         self.state.update(status="running", current_target=None,
-                          phase_detail=f"churn: {len(due)} follow(s) due for review")
+                          phase_detail=(f"churn: {len(due)} follow(s) due for review"
+                                        + (f" ({len(gave_up)} poison skipped)" if gave_up else "")))
         if not due:
             return "exhausted"
 

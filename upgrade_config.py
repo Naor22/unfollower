@@ -136,6 +136,7 @@ DEFAULTS = {
         "unfollow_retry_backoff_seconds": [3, 8],
         "use_following_list_fallback": True,
         "account_resync_every": 40,
+        "unfollow_give_up_after": 3,   # stop retrying a poison account after N failed unfollows
     },
     "logging": {
         "unfollowed_log": "data/unfollowed.log",
