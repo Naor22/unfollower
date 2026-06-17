@@ -1574,7 +1574,6 @@
                   <div class="card-title">Scraper &amp; autopilot <span class="pill">separate service</span></div>
                   <div class="switch-grid" style="margin-bottom:14px;">
                     <div class="switch-cell"><span class="sc-label">Scraper service enabled</span><label class="switch"><input type="checkbox" x-model="config.scraper.enabled" /><span class="track"></span></label></div>
-                    <div class="switch-cell"><span class="sc-label">Use external scraper (core bot stops scraping)</span><label class="switch"><input type="checkbox" x-model="config.scraper.external" /><span class="track"></span></label></div>
                     <div class="switch-cell"><span class="sc-label">Keep running when pool is empty</span><label class="switch"><input type="checkbox" x-model="config.scraper.keep_running" /><span class="track"></span></label></div>
                     <div class="switch-cell"><span class="sc-label">Only scrape in bot's dead-time</span><label class="switch"><input type="checkbox" x-model="config.scraper.coordinate_with_bot" /><span class="track"></span></label></div>
                   </div>
@@ -2362,7 +2361,7 @@
             C.targeting.discovery = Object.assign({ enabled: false, keywords: [], negative_keywords: [], min_followers: 5000, max_followers: 500000 }, C.targeting.discovery || {});
             A('engagement', { reach_enabled: true, reach_source: 'hashtags', reach_view_story: true, reach_hashtags: [], reach_cadence_min: 1, reach_cadence_max: 4, reach_cadence_fallback: 5, reach_like_posts: 1, on_follow_view_story: true, on_follow_like_posts: 1 });
             A('marketing', { unfollow_after_days: 2, keep_followers_back: false, also_trim_following: false, list_trim_cap: 40, ratio_unfollows: 5, ratio_follows: 4 });
-            A('scraper', { enabled: false, external: false, keep_running: false, coordinate_with_bot: true, idle_recheck_min: 15, idle_recheck_max: 30, follow_pool_mult: 5, reach_pool_mult: 5, cdp_endpoint: '', idle_seconds: 600, filter_delay_min: 1, filter_delay_max: 3 });
+            A('scraper', { enabled: false, keep_running: false, coordinate_with_bot: true, idle_recheck_min: 15, idle_recheck_max: 30, follow_pool_mult: 5, reach_pool_mult: 5, cdp_endpoint: '', idle_seconds: 600, filter_delay_min: 1, filter_delay_max: 3 });
             A('behavior', { use_following_cache: true, warmup_browse_seconds: 20, account_resync_every: 40, unfollow_give_up_after: 3 });
             this.discoveryKeywordsText = (C.targeting.discovery.keywords || []).join('\n');
             this.discoveryNegativeText = (C.targeting.discovery.negative_keywords || []).join('\n');

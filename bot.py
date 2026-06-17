@@ -360,8 +360,8 @@ _CONFIG_MOVES = [
     ("follow.churn.list_unfollow_cap", "marketing.list_trim_cap"),
     ("follow.churn.interleave_unfollows", "marketing.ratio_unfollows"),
     ("follow.churn.interleave_follows", "marketing.ratio_follows"),
-    # scraper (+ autopilot pulled in)
-    ("follow.external_scraper", "scraper.external"),
+    # scraper (+ autopilot pulled in). (follow.external_scraper is retired - the burner
+    # service is now the only scraper; the bot is always consume-only.)
     ("behavior.keep_running", "scraper.keep_running"),
     ("behavior.idle_recheck_min", "scraper.idle_recheck_min"),
     ("behavior.idle_recheck_max", "scraper.idle_recheck_max"),
@@ -2687,7 +2687,7 @@ class Bot:
         if not scr.get("enabled", False):
             return True, ""   # scraper off → don't wait on pools it isn't filling
         warm, parts = True, []
-        if mode in ("follow", "marketing") and scr.get("external", False):
+        if mode in ("follow", "marketing"):
             # Low-water = only what the bot still needs TODAY (remaining follow room),
             # NOT a full daily cap. So once it's mid-day the bot keeps consuming a
             # shrinking pool as long as there's enough left to finish today's follows,
@@ -2726,14 +2726,41 @@ class Bot:
         so a stuck/absent scraper can never deadlock the bot."""
         if not scraper_running():
             return
-        idle_marks = ("idle", "pools at target", "paused", "stopped", "disabled", "starting")
         end = time.monotonic() + max_wait
         while time.monotonic() < end and not self._stop_event.is_set():
-            ph = self._scraper_phase().lower()
-            if not ph or any(ph.startswith(m) for m in idle_marks):
+            if not self._scraper_active():
                 return   # scraper released (or status stale/absent) → safe to proceed
             self.state.update(phase_detail="waiting for the scraper to free the Pi…")
             self._interruptible_sleep(0.5)
+
+    _SCRAPER_IDLE_MARKS = ("idle", "pools at target", "paused", "stopped", "disabled", "starting")
+
+    def _scraper_active(self) -> bool:
+        """True when the burner scraper is actively working right now (scraping / vetting
+        / harvesting), per its fresh status phase. Lets the bot surface the whole system
+        as 'scraping' while it's idle, rather than 'sleeping' - one system, not two."""
+        if not scraper_running():
+            return False
+        ph = self._scraper_phase().lower()
+        return bool(ph) and not any(ph.startswith(m) for m in self._SCRAPER_IDLE_MARKS)
+
+    def _sleep_reflecting_scraper(self, seconds: float, sleeping_detail: str) -> None:
+        """Sleep in short ticks, but show the system as 'scraping' (with the live burner
+        phase) whenever the scraper is working, else 'sleeping' with `sleeping_detail`.
+        Leaves next_action_at as the caller set it. Makes a bot-idle/scraper-busy stretch
+        read as one system doing work."""
+        end = time.monotonic() + seconds
+        while not self._stop_event.is_set():
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
+            if self._scraper_active():
+                self.state.update(status="scraping", current_target=None,
+                                  phase_detail="scraping — " + (self._scraper_phase() or "filling pools"))
+            else:
+                self.state.update(status="sleeping", current_target=None,
+                                  phase_detail=sleeping_detail)
+            self._interruptible_sleep(min(5.0, remaining))
 
     def _write_scraper_status(self, error: Optional[str] = None,
                               phase: str = "") -> None:
@@ -4705,11 +4732,6 @@ class Bot:
         my_username = (os.getenv("IG_USERNAME") or "").lower()
         done_set = self._follow_done_set(whitelist, my_username)
 
-        sources = targeting.get("sources", {}) or {}
-        has_sources = bool((sources.get("profiles") or [])
-                           or (sources.get("post_likers") or []))
-        external_scraper = bool((cfg.get("scraper", {}) or {}).get("external", False))
-        pool_min = int(targeting.get("candidate_pool_min", 300))
         # Source diversity: don't follow the same seed (target's followers / one
         # hashtag / one post) more than this many times in a row while another
         # seed is available, so any window of follows is spread across sources.
@@ -4724,9 +4746,9 @@ class Bot:
         # earlier this run isn't re-attempted every interleaved batch.
         seen: set[str] = set(self._run_skip)
 
-        # follow_candidates is the ELIGIBLE result list (scraper-vetted, or self-
-        # scraped when no external scraper). We re-read it every follow so newly-
-        # vetted accounts are picked up immediately, with no comparison needed.
+        # follow_candidates is the ELIGIBLE result list (scraper-vetted). The bot is
+        # consume-only - the burner scraper service is the sole source - so we just
+        # re-read it every follow to pick up newly-vetted accounts immediately.
         while not self._stop_event.is_set():
             if processed >= daily_cap:
                 self.state.update(phase_detail=f"daily cap {daily_cap} reached")
@@ -4740,18 +4762,6 @@ class Bot:
             candidates = read_follow_candidates()
             eligible = [c for c in candidates
                         if c["username"] not in done_set and c["username"] not in seen]
-
-            # Core-bot self-scrape top-up (only when no external scraper owns the pool).
-            if (not external_scraper and has_sources and len(eligible) < pool_min
-                    and not self._stop_event.is_set()):
-                self.state.update(phase_detail=f"pool low ({len(eligible)}) - scraping sources")
-                try:
-                    self._scrape_candidates(page, cfg)
-                except Exception as e:
-                    self.state.emit("log", {"level": "error", "msg": f"scrape failed: {e}"})
-                candidates = read_follow_candidates()
-                eligible = [c for c in candidates
-                            if c["username"] not in done_set and c["username"] not in seen]
 
             self.state.update(
                 status="running", daily_cap=daily_cap, candidate_pool=len(eligible),
@@ -4780,8 +4790,7 @@ class Bot:
             self.state.update(current_target=target, progress_index=processed + 1)
 
             try:
-                result = self._follow(page, target, filters, disc_cfg,
-                                      lean=external_scraper)
+                result = self._follow(page, target, filters, disc_cfg, lean=True)
             except Exception as e:
                 result = "error"
                 self.state.emit("log", {"level": "error", "msg": f"exception on {target}: {e}"})
@@ -5434,14 +5443,14 @@ class Bot:
                         self.state.update(next_action_at=None)
                         continue
                     # Hit today's caps → sleep to the next local day (caps re-roll then).
+                    # The burner keeps building tomorrow's pools meanwhile, so reflect
+                    # 'scraping' while it works rather than a flat 'sleeping'.
                     if self._day_capped_for_mode(day_cfg, mode):
                         disconnect(); self._set_acting(False)
                         gate_secs = self._seconds_until_tomorrow()
-                        self.state.update(
-                            status="sleeping", current_target=None,
-                            phase_detail=f"daily caps reached - resuming tomorrow (~{gate_secs / 3600:.1f}h)",
-                            next_action_at=time.time() + gate_secs)
-                        self._interruptible_sleep(gate_secs)
+                        self.state.update(next_action_at=time.time() + gate_secs)
+                        self._sleep_reflecting_scraper(
+                            gate_secs, f"daily caps reached - resuming tomorrow (~{gate_secs / 3600:.1f}h)")
                         self.state.update(next_action_at=None)
                         continue
 
@@ -5462,12 +5471,16 @@ class Bot:
                             warm, detail = self._pools_warm(day_cfg, mode)
                             if warm:
                                 break
-                            sp = self._scraper_phase()
-                            self.state.update(
-                                status="sleeping", current_target=None, next_action_at=None,
-                                phase_detail=(f"warming up - {detail}"
-                                              + (f" (scraper: {sp})" if sp else
-                                                 " (scraper idle/off - start it?)")))
+                            # One system: while the burner fills the pool, show the whole
+                            # system as 'scraping' (live phase), not 'sleeping'.
+                            if self._scraper_active():
+                                self.state.update(
+                                    status="scraping", current_target=None, next_action_at=None,
+                                    phase_detail=f"scraping — {self._scraper_phase()} · need {detail}")
+                            else:
+                                self.state.update(
+                                    status="sleeping", current_target=None, next_action_at=None,
+                                    phase_detail=f"waiting for pool - {detail} (scraper idle/off - start it?)")
                             self._interruptible_sleep(5)
                         continue
                     if not self._warmed:
@@ -5607,14 +5620,11 @@ class Bot:
                     wake = time.time() + sleep_s
                     human = (f"~{sleep_s / 60:.0f}m" if sleep_s < 3600
                              else f"~{sleep_s / 3600:.1f}h")
-                    # Going idle between cycles → CLOSE the browser, free the Pi.
+                    # Going idle between cycles → CLOSE the browser, free the Pi. The
+                    # burner refills the pool meanwhile, so show 'scraping' while it works.
                     disconnect(); self._set_acting(False)
-                    self.state.update(
-                        status="sleeping", current_target=None,
-                        phase_detail=f"{note}; next cycle in {human}",
-                        next_action_at=wake,
-                    )
-                    self._interruptible_sleep(sleep_s)
+                    self.state.update(next_action_at=wake)
+                    self._sleep_reflecting_scraper(sleep_s, f"{note}; next cycle in {human}")
                     self.state.update(next_action_at=None)
 
                 disconnect()   # run ended → tear the browser down

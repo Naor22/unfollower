@@ -101,7 +101,6 @@ DEFAULTS = {
     },
     "scraper": {
         "enabled": False,
-        "external": False,           # core bot consumes the scraper's pool
         "keep_running": False,
         "coordinate_with_bot": True,
         "idle_recheck_min": 15,
