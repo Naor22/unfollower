@@ -5144,7 +5144,7 @@ class Bot:
                     srcs = (cfg.get("targeting", {}) or {}).get("sources", {}) or {}
                     tags = [t for t in (eng_cfg0.get("reach_hashtags") or srcs.get("hashtags") or []) if t]
                     self.state.emit("log", {"level": "info" if tags else "error",
-                        "msg": (f"reach enabled (in-loop) - {len(tags)} hashtag(s) loaded" if tags
+                        "msg": ("reach enabled" if tags
                                 else "reach is ON but NO hashtags configured - add some in Sources → Hashtags")})
 
                 daily_loop = bool(behavior.get("daily_loop", False))
