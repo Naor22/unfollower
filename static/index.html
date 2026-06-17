@@ -586,7 +586,7 @@
                   <select x-model="config.mode" @change="changeMode()" :disabled="isRunning" style="min-width:230px;">
                     <option value="unfollow">Unfollow</option>
                     <option value="follow">Follow</option>
-                    <option value="churn">Marketing</option>
+                    <option value="marketing">Marketing</option>
                   </select>
                   <span class="field-hint" style="margin:0;" x-show="!isRunning">applies next start</span>
                   <span class="field-hint" style="margin:0;color:var(--warning);" x-show="isRunning">stop the bot to change mode</span>
@@ -746,11 +746,11 @@
                 <button class="ghost" @click="clearCache()" :disabled="isRunning" title="Force re-scrape of the following list on next run">Clear cached following</button>
                 <button class="ghost" x-show="isFollowMode()" @click="scrapeNow()" :disabled="isRunning">Scrape sources now</button>
               </div>
-              <template x-if="config && config.follow && config.follow.engagement">
+              <template x-if="config && config.targeting && config.engagement">
                 <div style="margin-top:12px;">
                   <div class="switch-cell">
                     <span class="sc-label">Background reach marketing<br><span style="color:var(--muted);font-size:11px;">like niche hashtag posts during ANY mode</span></span>
-                    <label class="switch"><input type="checkbox" x-model="config.follow.engagement.story_reach_enabled" @change="saveConfig()" /><span class="track"></span></label>
+                    <label class="switch"><input type="checkbox" x-model="config.engagement.reach_enabled" @change="saveConfig()" /><span class="track"></span></label>
                   </div>
                   <div class="reach-stats">
                     <div><div class="rs-n" x-text="state.reach_liked || 0"></div><div class="rs-l">liked</div></div>
@@ -885,42 +885,6 @@
                   </div>
                 </div>
               </template>
-            </div>
-          </div>
-        </div>
-
-        <!-- ============ SOURCES ============ -->
-        <div x-show="tab==='sources'" x-transition.opacity>
-          <div class="page-head"><h1>Sources</h1><p>Where to scrape strangers from. The bot collects usernames from each source and tops up the candidate pool - automatically when it runs low, or on demand.</p></div>
-          <div class="card">
-            <div class="form-grid">
-              <div>
-                <label>Follower profiles <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape their followers)</span></label>
-                <textarea x-model="sourcesProfilesText" placeholder="competitor1&#10;competitor2" style="min-height:150px;"></textarea>
-                <div class="field-hint">One username per line. <code>@</code> optional. Private accounts can't be scraped.</div>
-              </div>
-              <div>
-                <label>Post URLs <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape their likers)</span></label>
-                <textarea x-model="sourcesPostsText" placeholder="https://www.instagram.com/p/XXXXXXX/" style="min-height:150px;"></textarea>
-                <div class="field-hint">One post URL per line. Likers are hidden on some posts (esp. video/reels) - those return nothing.</div>
-              </div>
-              <div>
-                <label>Comment post URLs <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape their commenters)</span></label>
-                <textarea x-model="sourcesCommentersText" placeholder="https://www.instagram.com/p/XXXXXXX/" style="min-height:150px;"></textarea>
-                <div class="field-hint">One post URL per line. Commenters show higher intent than likers.</div>
-              </div>
-              <div>
-                <label>Hashtags <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape posters & commenters)</span></label>
-                <textarea x-model="sourcesHashtagsText" placeholder="hairloss&#10;trichology" style="min-height:150px;"></textarea>
-                <div class="field-hint">One hashtag per line. <code>#</code> optional. High-intent, fresh targets.</div>
-              </div>
-            </div>
-            <div class="btn-row" style="margin-top:16px;">
-              <button class="primary" @click="saveSources()">Save sources</button>
-              <button @click="loadSources()">Reload</button>
-              <button class="ghost" @click="scrapeNow()" :disabled="isRunning" title="Scrape all sources into the candidate pool now">Scrape now</button>
-              <span class="field-hint" style="margin:0;color:var(--warning);" x-show="isRunning">stop the bot first to scrape on demand</span>
-              <span class="field-hint" style="margin:0;" x-text="(config && config.follow) ? ('caps: ' + config.follow.scrape_per_source_cap + '/source · pool target ' + config.follow.candidate_pool_min) : ''"></span>
             </div>
           </div>
         </div>
@@ -1115,7 +1079,7 @@
 
         <!-- ============ CHURN ============ -->
         <div x-show="tab==='churn'" x-transition.opacity>
-          <div class="page-head"><h1>Churn</h1><p>Outcome of the churn review (follows older than <strong x-text="(config && config.follow && config.follow.churn) ? config.follow.churn.unfollow_after_days : '?'"></strong> days). Kept = followed you back; Churned = didn't, so unfollowed.</p></div>
+          <div class="page-head"><h1>Churn</h1><p>Outcome of the churn review (follows older than <strong x-text="(config && config.targeting && config.marketing) ? config.marketing.unfollow_after_days : '?'"></strong> days). Kept = followed you back; Churned = didn't, so unfollowed.</p></div>
           <div class="card">
             <div class="card-title">Kept (followed you back) <span class="pill" x-text="followKept.length"></span></div>
             <div class="list-scroll" style="max-height:32vh;margin-bottom:18px;">
@@ -1309,240 +1273,276 @@
 
         <!-- ============ CONFIG ============ -->
         <div x-show="tab==='config'" x-transition.opacity>
-          <div class="page-head"><h1>Config</h1><p>Bot pacing, browser and growth settings (<code>config.yaml</code>).</p></div>
+          <div class="page-head"><h1>Config</h1><p>All settings, grouped into sections. Most edits save to <code>config.yaml</code>.</p></div>
           <template x-if="config">
             <div>
-              <div class="card">
-                <div class="card-title">Pacing</div>
-                <div class="form-grid">
-                  <div><label>Daily cap</label><input type="number" x-model.number="config.pacing.daily_cap" /></div>
-                  <div><label>Long break every N</label><input type="number" x-model.number="config.pacing.long_break_every_n" /></div>
-                  <div><label>Min delay (s)</label><input type="number" x-model.number="config.pacing.min_delay_seconds" /></div>
-                  <div><label>Max delay (s)</label><input type="number" x-model.number="config.pacing.max_delay_seconds" /></div>
-                  <div><label>Long break min (s)</label><input type="number" x-model.number="config.pacing.long_break_min_seconds" /></div>
-                  <div><label>Long break max (s)</label><input type="number" x-model.number="config.pacing.long_break_max_seconds" /></div>
-                  <div><label>Distraction chance</label><input type="number" step="0.01" x-model.number="config.pacing.distraction_chance" /></div>
-                  <div><label>Distraction min (s)</label><input type="number" x-model.number="config.pacing.distraction_min_seconds" /></div>
-                  <div><label>Distraction max (s)</label><input type="number" x-model.number="config.pacing.distraction_max_seconds" /></div>
+              <div class="btn-row" style="margin-bottom:18px;flex-wrap:wrap;gap:6px;">
+                <button :class="configTab==='limits' ? 'primary' : 'ghost'" @click="configTab='limits'">Limits &amp; safety</button>
+                <button :class="configTab==='targeting' ? 'primary' : 'ghost'" @click="configTab='targeting'">Targeting</button>
+                <button :class="configTab==='engagement' ? 'primary' : 'ghost'" @click="configTab='engagement'">Engagement</button>
+                <button :class="configTab==='marketing' ? 'primary' : 'ghost'" @click="configTab='marketing'">Marketing</button>
+                <button :class="configTab==='scraper' ? 'primary' : 'ghost'" @click="configTab='scraper'">Scraper</button>
+                <button :class="configTab==='connection' ? 'primary' : 'ghost'" @click="configTab='connection'">Connection</button>
+              </div>
+
+              <!-- ===== LIMITS & SAFETY ===== -->
+              <div x-show="configTab==='limits'" x-transition.opacity>
+                <div class="card">
+                  <div class="card-title">Daily limits <span class="pill">per day</span></div>
+                  <div class="form-grid">
+                    <div><label>Follows / day</label><input type="number" x-model.number="config.limits.follows_per_day" /></div>
+                    <div><label>Unfollows / day</label><input type="number" x-model.number="config.limits.unfollows_per_day" /></div>
+                    <div><label>Likes / day (reach)</label><input type="number" x-model.number="config.limits.likes_per_day" /></div>
+                    <div><label>Combined follows+unfollows / day (0 = off)</label><input type="number" x-model.number="config.limits.combined_per_day" /></div>
+                    <div><label>Daily jitter (0-1)</label><input type="number" step="0.05" x-model.number="config.limits.daily_jitter" /></div>
+                  </div>
+                  <p class="hint" style="margin-top:8px;">True per-day ceilings (randomized by the jitter each day). The bot sleeps to the next day once its mode's caps are reached.</p>
+                </div>
+                <div class="card">
+                  <div class="card-title">Pacing <span class="pill">human-like timing</span></div>
+                  <div class="form-grid">
+                    <div><label>Action delay min (s)</label><input type="number" x-model.number="config.pacing.action_delay_min" /></div>
+                    <div><label>Action delay max (s)</label><input type="number" x-model.number="config.pacing.action_delay_max" /></div>
+                    <div><label>Long break every N</label><input type="number" x-model.number="config.pacing.long_break_every" /></div>
+                    <div><label>Long break min (s)</label><input type="number" x-model.number="config.pacing.long_break_min" /></div>
+                    <div><label>Long break max (s)</label><input type="number" x-model.number="config.pacing.long_break_max" /></div>
+                    <div><label>Distraction chance</label><input type="number" step="0.01" x-model.number="config.pacing.distraction_chance" /></div>
+                    <div><label>Distraction min (s)</label><input type="number" x-model.number="config.pacing.distraction_min" /></div>
+                    <div><label>Distraction max (s)</label><input type="number" x-model.number="config.pacing.distraction_max" /></div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card-title">Safety &amp; anti-block</div>
+                  <div class="switch-grid" style="margin-bottom:14px;">
+                    <div class="switch-cell"><span class="sc-label">Restrict to active hours (off = run 24/7, stop only on daily caps)</span><label class="switch"><input type="checkbox" x-model="config.safety.active_hours_enabled" /><span class="track"></span></label></div>
+                  </div>
+                  <div class="form-grid">
+                    <div><label>Active hours start (0-24)</label><input type="number" x-model.number="config.safety.active_hours_start" /></div>
+                    <div><label>Active hours end (0-24)</label><input type="number" x-model.number="config.safety.active_hours_end" /></div>
+                    <div><label>Soft-blocks/day before stop</label><input type="number" x-model.number="config.safety.soft_block_max_per_day" /></div>
+                    <div><label>Gated-follow rest after N fails (0=off)</label><input type="number" x-model.number="config.safety.follow_fail_rest_threshold" /></div>
+                    <div><label>Rest window min (s)</label><input type="number" x-model.number="config.safety.follow_fail_rest_min" /></div>
+                    <div><label>Rest window max (s)</label><input type="number" x-model.number="config.safety.follow_fail_rest_max" /></div>
+                    <div><label>Rests/day before hard-stop</label><input type="number" x-model.number="config.safety.follow_rest_max_per_day" /></div>
+                  </div>
+                  <p class="hint" style="margin-top:8px;"><strong>Active hours off</strong> = run around the clock, stopping only on daily caps. <strong>Gated-follow rest</strong>: after this many follow failures in a row the bot closes the browser, lets the scraper fill pools while Instagram cools down, then resumes - giving up for the day after the rest limit.</p>
                 </div>
               </div>
 
-              <div class="card">
-                <div class="card-title">Daily caps &amp; safety</div>
-                <div class="switch-grid" style="margin-bottom:14px;">
-                  <div class="switch-cell">
-                    <span class="sc-label">Restrict to active hours (off = run 24/7, stop only on daily caps)</span>
-                    <label class="switch"><input type="checkbox" x-model="config.pacing.active_hours_enabled" /><span class="track"></span></label>
+              <!-- ===== TARGETING ===== -->
+              <div x-show="configTab==='targeting'" x-transition.opacity>
+                <div class="card">
+                  <div class="card-title">Sources <span class="pill">where to find people</span></div>
+                  <div class="form-grid">
+                    <div>
+                      <label>Follower profiles <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape their followers)</span></label>
+                      <textarea x-model="sourcesProfilesText" placeholder="competitor1&#10;competitor2" style="min-height:130px;"></textarea>
+                      <div class="field-hint">One username per line. <code>@</code> optional. Private accounts can't be scraped.</div>
+                    </div>
+                    <div>
+                      <label>Post URLs <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape their likers)</span></label>
+                      <textarea x-model="sourcesPostsText" placeholder="https://www.instagram.com/p/XXXXXXX/" style="min-height:130px;"></textarea>
+                      <div class="field-hint">One post URL per line. Likers are hidden on some posts.</div>
+                    </div>
+                    <div>
+                      <label>Comment post URLs <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape their commenters)</span></label>
+                      <textarea x-model="sourcesCommentersText" placeholder="https://www.instagram.com/p/XXXXXXX/" style="min-height:130px;"></textarea>
+                      <div class="field-hint">One post URL per line. Commenters show higher intent than likers.</div>
+                    </div>
+                    <div>
+                      <label>Hashtags <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(scrape posters &amp; commenters)</span></label>
+                      <textarea x-model="sourcesHashtagsText" placeholder="hairloss&#10;trichology" style="min-height:130px;"></textarea>
+                      <div class="field-hint">One hashtag per line. <code>#</code> optional. Also used by reach.</div>
+                    </div>
+                  </div>
+                  <div class="btn-row" style="margin-top:16px;">
+                    <button class="primary" @click="saveSources()">Save sources</button>
+                    <button @click="loadSources()">Reload</button>
+                    <button class="ghost" @click="scrapeNow()" :disabled="isRunning" title="Scrape all sources into the candidate pool now">Scrape now</button>
+                    <span class="field-hint" style="margin:0;color:var(--warning);" x-show="isRunning">stop the bot first to scrape on demand</span>
                   </div>
                 </div>
-                <div class="form-grid">
-                  <div><label>Active hours start (0-24)</label><input type="number" x-model.number="config.pacing.active_hours_start" /></div>
-                  <div><label>Active hours end (0-24)</label><input type="number" x-model.number="config.pacing.active_hours_end" /></div>
-                  <div><label>Soft-blocks/day before stop</label><input type="number" x-model.number="config.pacing.soft_block_max_per_day" /></div>
-                  <div><label>Gated-follow rest after N fails (0=off)</label><input type="number" x-model.number="config.pacing.follow_fail_rest_threshold" /></div>
-                  <div><label>Rest window min (s)</label><input type="number" x-model.number="config.pacing.follow_fail_rest_min_seconds" /></div>
-                  <div><label>Rest window max (s)</label><input type="number" x-model.number="config.pacing.follow_fail_rest_max_seconds" /></div>
-                  <div><label>Rests/day before hard-stop</label><input type="number" x-model.number="config.pacing.follow_rest_max_per_day" /></div>
+                <div class="card">
+                  <div class="card-title">Pool &amp; scraping</div>
+                  <div class="form-grid">
+                    <div><label>Candidate pool min</label><input type="number" x-model.number="config.targeting.candidate_pool_min" /></div>
+                    <div><label>Scrape cap / source</label><input type="number" x-model.number="config.targeting.scrape_per_source_cap" /></div>
+                    <div><label>Scrape chunk / seed</label><input type="number" x-model.number="config.targeting.scrape_per_seed_cap" /></div>
+                    <div><label>Max same-seed streak</label><input type="number" x-model.number="config.targeting.max_same_seed_streak" /></div>
+                  </div>
                 </div>
-                <p class="hint" style="margin-top:8px;">With <strong>active hours off</strong> the bot runs around the clock and stops only when the day's follow/unfollow/like caps are reached, then sleeps to the next day. <strong>Gated-follow rest</strong>: after this many follow failures in a row (across interleaved churn batches) the bot closes the browser, lets the scraper fill pools while Instagram cools down, then resumes - giving up for the day after the rest limit.</p>
+                <div class="card">
+                  <div class="card-title">Filters</div>
+                  <div class="switch-grid" style="margin-bottom:14px;">
+                    <div class="switch-cell"><span class="sc-label">Skip accounts that already follow you</span><label class="switch"><input type="checkbox" x-model="config.targeting.filters.skip_already_follows_me" /><span class="track"></span></label></div>
+                    <div class="switch-cell"><span class="sc-label">Skip private accounts</span><label class="switch"><input type="checkbox" x-model="config.targeting.filters.skip_private" /><span class="track"></span></label></div>
+                    <div class="switch-cell"><span class="sc-label">Skip accounts with no posts</span><label class="switch"><input type="checkbox" x-model="config.targeting.filters.skip_no_posts" /><span class="track"></span></label></div>
+                  </div>
+                  <div class="form-grid">
+                    <div><label>Min followers (0 = ignore)</label><input type="number" x-model.number="config.targeting.filters.min_followers" /></div>
+                    <div><label>Max followers (0 = ignore)</label><input type="number" x-model.number="config.targeting.filters.max_followers" /></div>
+                    <div><label>Max following (0 = ignore)</label><input type="number" x-model.number="config.targeting.filters.max_following" /></div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card-title">Source discovery <span class="pill">auto-find niche influencers</span></div>
+                  <div class="switch-grid" style="margin-bottom:14px;">
+                    <div class="switch-cell"><span class="sc-label">Enabled (queue niche influencers for review)</span><label class="switch"><input type="checkbox" x-model="config.targeting.discovery.enabled" /><span class="track"></span></label></div>
+                  </div>
+                  <div class="form-grid">
+                    <div><label>Min followers</label><input type="number" x-model.number="config.targeting.discovery.min_followers" /></div>
+                    <div><label>Max followers</label><input type="number" x-model.number="config.targeting.discovery.max_followers" /></div>
+                  </div>
+                  <div style="margin-top:12px;">
+                    <label>Keywords <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(bio must contain one)</span></label>
+                    <textarea x-model="discoveryKeywordsText" placeholder="hairloss&#10;trichology&#10;hair transplant" style="min-height:90px;"></textarea>
+                    <div class="field-hint">One per line. Matches are queued in the Discovered tab for one-click add.</div>
+                  </div>
+                  <div style="margin-top:12px;">
+                    <label>Negative keywords <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(skip if bio contains)</span></label>
+                    <textarea x-model="discoveryNegativeText" placeholder="(optional)" style="min-height:60px;"></textarea>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card-title">Whitelist <span class="pill">never unfollowed</span></div>
+                  <div class="toolbar">
+                    <div class="search">
+                      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                      <input type="text" placeholder="Search whitelist&hellip;" x-model="whitelistFilter" />
+                    </div>
+                    <span class="count-chip" x-text="whitelistEntries().length + ' / ' + whitelistAll().length + ' shown'"></span>
+                  </div>
+                  <div class="list-scroll" style="max-height:32vh;margin-bottom:14px;">
+                    <template x-if="whitelistAll().length === 0"><div class="empty"><div class="t">Whitelist is empty</div></div></template>
+                    <template x-if="whitelistAll().length > 0 && whitelistEntries().length === 0"><div class="empty"><div class="t">No matches</div></div></template>
+                    <template x-for="name in whitelistEntries()" :key="name">
+                      <div class="list-row">
+                        <div class="username"><span class="at">@</span><span x-text="name"></span></div>
+                        <div class="grow"></div>
+                        <button class="ghost sm" @click="removeFromWhitelist(name)">Remove</button>
+                      </div>
+                    </template>
+                  </div>
+                  <label>Raw whitelist <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(one per line &middot; <code>@</code> optional &middot; <code>#</code> = comment)</span></label>
+                  <textarea x-model="whitelistText"></textarea>
+                  <div class="btn-row" style="margin-top:16px;">
+                    <button class="primary" @click="saveWhitelist()">Save whitelist</button>
+                    <button @click="loadWhitelist()">Reload from disk</button>
+                  </div>
+                </div>
               </div>
 
-              <div class="card">
-                <div class="card-title">Browser</div>
-                <div class="switch-grid" style="margin-bottom:14px;">
-                  <div class="switch-cell">
-                    <span class="sc-label">Headless (no window)</span>
-                    <label class="switch"><input type="checkbox" x-model="config.browser.headless" /><span class="track"></span></label>
+              <!-- ===== ENGAGEMENT ===== -->
+              <div x-show="configTab==='engagement'" x-transition.opacity>
+                <div class="card">
+                  <div class="card-title">Engagement <span class="pill">reach / extra exposure</span></div>
+                  <div class="switch-grid" style="margin-bottom:14px;">
+                    <div class="switch-cell"><span class="sc-label">Reach marketing (like niche posts during any mode)</span><label class="switch"><input type="checkbox" x-model="config.engagement.reach_enabled" /><span class="track"></span></label></div>
+                    <div class="switch-cell"><span class="sc-label">Also view the poster's story</span><label class="switch"><input type="checkbox" x-model="config.engagement.reach_view_story" /><span class="track"></span></label></div>
+                    <div class="switch-cell"><span class="sc-label">View their story right after following</span><label class="switch"><input type="checkbox" x-model="config.engagement.on_follow_view_story" /><span class="track"></span></label></div>
                   </div>
-                </div>
-                <div class="form-grid">
-                  <div><label>Locale</label><input type="text" x-model="config.browser.locale" /></div>
-                  <div><label>Viewport width</label><input type="number" x-model.number="config.browser.viewport_width" /></div>
-                  <div><label>Viewport height</label><input type="number" x-model.number="config.browser.viewport_height" /></div>
-                  <div class="full"><label>User agent</label><input type="text" x-model="config.browser.user_agent" /></div>
+                  <div class="form-grid">
+                    <div><label>Reach source</label>
+                      <select x-model="config.engagement.reach_source">
+                        <option value="hashtags">Hashtags - like public posts under niche tags (recommended)</option>
+                        <option value="pool">Candidate pool - engage scraped accounts (mostly private)</option>
+                      </select>
+                    </div>
+                    <div><label>Reach daily cap (likes/day)</label><input type="number" x-model.number="config.limits.likes_per_day" /></div>
+                    <div><label>Like every - min actions</label><input type="number" x-model.number="config.engagement.reach_cadence_min" /></div>
+                    <div><label>Like every - max actions</label><input type="number" x-model.number="config.engagement.reach_cadence_max" /></div>
+                    <div><label>Like N posts after follow (0 = off)</label><input type="number" x-model.number="config.engagement.on_follow_like_posts" /></div>
+                  </div>
+                  <div class="field-hint" style="margin-top:10px;">Reach fires after a random number of actions between min and max. Hashtag reach uses your Sources &rarr; Hashtags list - every hashtag post is public, so likes actually land. The reach daily cap is the shared likes/day limit.</div>
                 </div>
               </div>
 
-              <div class="card">
-                <div class="card-title">Behavior</div>
-                <div class="switch-grid" style="margin-bottom:14px;">
-                  <div class="switch-cell">
-                    <span class="sc-label">Use cached following list</span>
-                    <label class="switch"><input type="checkbox" x-model="config.behavior.use_following_cache" /><span class="track"></span></label>
+              <!-- ===== MARKETING ===== -->
+              <div x-show="configTab==='marketing'" x-transition.opacity>
+                <div class="card">
+                  <div class="card-title">Marketing <span class="pill">follow &rarr; wait &rarr; unfollow</span></div>
+                  <div class="switch-grid" style="margin-bottom:14px;">
+                    <div class="switch-cell"><span class="sc-label">Keep followers-back (don't unfollow accounts that followed you)</span><label class="switch"><input type="checkbox" x-model="config.marketing.keep_followers_back" /><span class="track"></span></label></div>
+                    <div class="switch-cell"><span class="sc-label">Also trim existing following list</span><label class="switch"><input type="checkbox" x-model="config.marketing.also_trim_following" /><span class="track"></span></label></div>
                   </div>
-                </div>
-                <div class="form-grid">
-                  <div><label>Warmup browse (s)</label><input type="number" x-model.number="config.behavior.warmup_browse_seconds" /></div>
+                  <div class="form-grid">
+                    <div><label>Unfollow after (days)</label><input type="number" x-model.number="config.marketing.unfollow_after_days" /></div>
+                    <div><label>List-trim cap / cycle</label><input type="number" x-model.number="config.marketing.list_trim_cap" /></div>
+                    <div><label>Ratio: unfollows / round</label><input type="number" x-model.number="config.marketing.ratio_unfollows" /></div>
+                    <div><label>Ratio: follows / round</label><input type="number" x-model.number="config.marketing.ratio_follows" /></div>
+                  </div>
+                  <p class="hint" style="margin-top:8px;">Marketing <strong>interleaves</strong> follows &amp; unfollows by the ratio above (e.g. 5 : 4). Daily follow/unfollow ceilings live under <strong>Limits</strong>. "Also trim following list" unfollows non-whitelisted accounts from your imported list. Reach (post-likes) runs alongside automatically.</p>
                 </div>
               </div>
 
-              <template x-if="config.follow">
-                <div>
-                  <div class="card">
-                    <div class="card-title">Follow / growth <span class="pill">follow &amp; churn modes</span></div>
-                    <div class="form-grid">
-                      <div><label>Daily cap (new follows)</label><input type="number" x-model.number="config.follow.daily_cap" /></div>
-                      <div><label>Candidate pool min</label><input type="number" x-model.number="config.follow.candidate_pool_min" /></div>
-                      <div><label>Min delay (s)</label><input type="number" x-model.number="config.follow.min_delay_seconds" /></div>
-                      <div><label>Max delay (s)</label><input type="number" x-model.number="config.follow.max_delay_seconds" /></div>
-                    </div>
+              <!-- ===== SCRAPER ===== -->
+              <div x-show="configTab==='scraper'" x-transition.opacity>
+                <div class="card">
+                  <div class="card-title">Scraper &amp; autopilot <span class="pill">separate service</span></div>
+                  <div class="switch-grid" style="margin-bottom:14px;">
+                    <div class="switch-cell"><span class="sc-label">Scraper service enabled</span><label class="switch"><input type="checkbox" x-model="config.scraper.enabled" /><span class="track"></span></label></div>
+                    <div class="switch-cell"><span class="sc-label">Use external scraper (core bot stops scraping)</span><label class="switch"><input type="checkbox" x-model="config.scraper.external" /><span class="track"></span></label></div>
+                    <div class="switch-cell"><span class="sc-label">Keep running when pool is empty</span><label class="switch"><input type="checkbox" x-model="config.scraper.keep_running" /><span class="track"></span></label></div>
+                    <div class="switch-cell"><span class="sc-label">Only scrape in bot's dead-time</span><label class="switch"><input type="checkbox" x-model="config.scraper.coordinate_with_bot" /><span class="track"></span></label></div>
                   </div>
-
-                  <div class="card">
-                    <div class="card-title">Follow filters</div>
-                    <div class="switch-grid" style="margin-bottom:14px;">
-                      <div class="switch-cell"><span class="sc-label">Skip accounts that already follow you</span><label class="switch"><input type="checkbox" x-model="config.follow.filters.skip_already_follows_me" /><span class="track"></span></label></div>
-                      <div class="switch-cell"><span class="sc-label">Skip private accounts</span><label class="switch"><input type="checkbox" x-model="config.follow.filters.skip_private" /><span class="track"></span></label></div>
-                      <div class="switch-cell"><span class="sc-label">Skip accounts with no posts</span><label class="switch"><input type="checkbox" x-model="config.follow.filters.skip_no_posts" /><span class="track"></span></label></div>
-                    </div>
-                    <div class="form-grid">
-                      <div><label>Min followers (0 = ignore)</label><input type="number" x-model.number="config.follow.filters.min_followers" /></div>
-                      <div><label>Max followers (0 = ignore)</label><input type="number" x-model.number="config.follow.filters.max_followers" /></div>
-                      <div><label>Max following (0 = ignore)</label><input type="number" x-model.number="config.follow.filters.max_following" /></div>
-                    </div>
+                  <div class="form-grid">
+                    <div><label>Idle re-check min (min)</label><input type="number" x-model.number="config.scraper.idle_recheck_min" /></div>
+                    <div><label>Idle re-check max (min)</label><input type="number" x-model.number="config.scraper.idle_recheck_max" /></div>
+                    <div><label>Follow pool high-water (&times; follows/day)</label><input type="number" x-model.number="config.scraper.follow_pool_mult" /></div>
+                    <div><label>Reach pool high-water (&times; likes/day)</label><input type="number" x-model.number="config.scraper.reach_pool_mult" /></div>
+                    <div><label>Scraper Chrome CDP endpoint</label><input type="text" x-model="config.scraper.cdp_endpoint" /></div>
+                    <div><label>Scrape pass gap (sec)</label><input type="number" x-model.number="config.scraper.idle_seconds" /></div>
+                    <div><label>Filter delay min (s)</label><input type="number" x-model.number="config.scraper.filter_delay_min" /></div>
+                    <div><label>Filter delay max (s)</label><input type="number" x-model.number="config.scraper.filter_delay_max" /></div>
                   </div>
-
-                  <template x-if="config.follow.discovery">
-                    <div class="card">
-                      <div class="card-title">Source discovery <span class="pill">auto-find niche influencers</span></div>
-                      <div class="switch-grid" style="margin-bottom:14px;">
-                        <div class="switch-cell"><span class="sc-label">Enabled (queue niche influencers for review)</span><label class="switch"><input type="checkbox" x-model="config.follow.discovery.enabled" /><span class="track"></span></label></div>
-                      </div>
-                      <div class="form-grid">
-                        <div><label>Min followers</label><input type="number" x-model.number="config.follow.discovery.min_followers" /></div>
-                        <div><label>Max followers</label><input type="number" x-model.number="config.follow.discovery.max_followers" /></div>
-                      </div>
-                      <div style="margin-top:12px;">
-                        <label>Keywords <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(bio must contain one)</span></label>
-                        <textarea x-model="discoveryKeywordsText" placeholder="hairloss&#10;trichology&#10;hair transplant" style="min-height:90px;"></textarea>
-                        <div class="field-hint">One per line. Matches are queued in the Discovered tab for one-click add.</div>
-                      </div>
-                      <div style="margin-top:12px;">
-                        <label>Negative keywords <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(skip if bio contains)</span></label>
-                        <textarea x-model="discoveryNegativeText" placeholder="(optional)" style="min-height:60px;"></textarea>
-                      </div>
-                    </div>
-                  </template>
-
-                  <template x-if="config.follow.engagement">
-                    <div class="card">
-                      <div class="card-title">Engagement <span class="pill">extra exposure</span></div>
-                      <div class="switch-grid" style="margin-bottom:14px;">
-                        <div class="switch-cell"><span class="sc-label">Reach marketing (like niche posts during any mode)</span><label class="switch"><input type="checkbox" x-model="config.follow.engagement.story_reach_enabled" /><span class="track"></span></label></div>
-                        <div class="switch-cell"><span class="sc-label">Also view the poster's story</span><label class="switch"><input type="checkbox" x-model="config.follow.engagement.reach_view_story" /><span class="track"></span></label></div>
-                        <div class="switch-cell"><span class="sc-label">View their story right after following</span><label class="switch"><input type="checkbox" x-model="config.follow.engagement.on_follow_view_story" /><span class="track"></span></label></div>
-                      </div>
-                      <div class="form-grid">
-                        <div><label>Reach source</label>
-                          <select x-model="config.follow.engagement.reach_source">
-                            <option value="hashtags">Hashtags - like public posts under niche tags (recommended)</option>
-                            <option value="pool">Candidate pool - engage scraped accounts (mostly private)</option>
-                          </select>
-                        </div>
-                        <div><label>Reach daily cap</label><input type="number" x-model.number="config.follow.engagement.story_reach_daily_cap" /></div>
-                        <div><label>Like every - min actions</label><input type="number" x-model.number="config.follow.engagement.story_reach_every_min" /></div>
-                        <div><label>Like every - max actions</label><input type="number" x-model.number="config.follow.engagement.story_reach_every_max" /></div>
-                        <div><label>Like N posts after follow (0 = off)</label><input type="number" x-model.number="config.follow.engagement.on_follow_like_posts" /></div>
-                      </div>
-                      <div class="field-hint" style="margin-top:10px;">Reach fires after a random number of actions between min and max (so it's not 1 like per unfollow). Hashtag reach uses your <a href="#" @click.prevent="go('sources')">Sources → Hashtags</a> list - every hashtag post is public, so likes actually land.</div>
-                    </div>
-                  </template>
-
-                  <template x-if="config.follow.churn">
-                    <div class="card">
-                      <div class="card-title">Churn <span class="pill">churn mode · stage 3</span></div>
-                      <div class="switch-grid" style="margin-bottom:14px;">
-                        <div class="switch-cell"><span class="sc-label">Keep followers-back</span><label class="switch"><input type="checkbox" x-model="config.follow.churn.keep_followers_back" /><span class="track"></span></label></div>
-                        <div class="switch-cell"><span class="sc-label">Also trim following list</span><label class="switch"><input type="checkbox" x-model="config.follow.churn.also_unfollow_following" /><span class="track"></span></label></div>
-                      </div>
-                      <div class="form-grid">
-                        <div><label>Unfollow after (days)</label><input type="number" x-model.number="config.follow.churn.unfollow_after_days" /></div>
-                        <div><label>Daily unfollow cap</label><input type="number" x-model.number="config.follow.churn.daily_unfollow_cap" /></div>
-                        <div><label>List-trim cap / cycle</label><input type="number" x-model.number="config.follow.churn.list_unfollow_cap" /></div>
-                        <div><label>Interleave: unfollows / round</label><input type="number" x-model.number="config.follow.churn.interleave_unfollows" /></div>
-                        <div><label>Interleave: follows / round</label><input type="number" x-model.number="config.follow.churn.interleave_follows" /></div>
-                      </div>
-                      <p class="hint" style="margin-top:8px;">Churn now <strong>interleaves</strong> follows &amp; unfollows in small batches per the ratio above (e.g. 2 : 1 = two unfollows for every follow → shrinks while marketing). “Also trim following list” unfollows non-whitelisted accounts from your imported list (data/following.json) so you keep shrinking toward a target. Reach (post-likes) keeps running alongside automatically.</p>
-                    </div>
-                  </template>
-
-                  <template x-if="config.scraper && config.behavior">
-                    <div class="card">
-                      <div class="card-title">Scraper &amp; autopilot <span class="pill">separate service</span></div>
-                      <div class="switch-grid" style="margin-bottom:14px;">
-                        <div class="switch-cell"><span class="sc-label">Use external scraper (core bot stops scraping)</span><label class="switch"><input type="checkbox" x-model="config.follow.external_scraper" /><span class="track"></span></label></div>
-                        <div class="switch-cell"><span class="sc-label">Keep running when pool is empty</span><label class="switch"><input type="checkbox" x-model="config.behavior.keep_running" /><span class="track"></span></label></div>
-                        <div class="switch-cell"><span class="sc-label">Scraper service enabled</span><label class="switch"><input type="checkbox" x-model="config.scraper.enabled" /><span class="track"></span></label></div>
-                        <div class="switch-cell"><span class="sc-label">Only scrape in bot's dead-time</span><label class="switch"><input type="checkbox" x-model="config.scraper.coordinate_with_bot" /><span class="track"></span></label></div>
-                      </div>
-                      <div class="form-grid">
-                        <div><label>Idle re-check min (min)</label><input type="number" x-model.number="config.behavior.idle_recheck_min" /></div>
-                        <div><label>Idle re-check max (min)</label><input type="number" x-model.number="config.behavior.idle_recheck_max" /></div>
-                        <div><label>Follow pool high-water (× daily cap)</label><input type="number" x-model.number="config.scraper.pool_high_mult" /></div>
-                        <div><label>Reach pool high-water (× reach cap)</label><input type="number" x-model.number="config.scraper.reach_pool_high_mult" /></div>
-                        <div><label>Scraper Chrome CDP endpoint</label><input type="text" x-model="config.scraper.cdp_endpoint" /></div>
-                        <div><label>Scrape pass gap (sec)</label><input type="number" x-model.number="config.scraper.idle_seconds" /></div>
-                        <div><label>Filter delay min (s)</label><input type="number" x-model.number="config.scraper.min_delay" /></div>
-                        <div><label>Filter delay max (s)</label><input type="number" x-model.number="config.scraper.max_delay" /></div>
-                      </div>
-                      <p class="hint" style="margin-top:8px;">The scraper runs as a separate service on a 2nd Chrome (burner account) - see DEPLOY.md. <strong>Only scrape in bot's dead-time</strong> pauses the scraper while the bot is actively working (no Pi contention) and lets it build the pool when the bot is sleeping/done-for-day; it stops once the ready pool reaches <strong>high-water × daily cap</strong>. <strong>Use external scraper</strong> makes the core bot consume its cleaned pool; <strong>Keep running</strong> stops the bot halting on an empty pool. Watch live status under System → Scraper service.</p>
-                    </div>
-                  </template>
+                  <p class="hint" style="margin-top:8px;">Runs as a separate service on a 2nd Chrome (burner). It fills the pools during the bot's dead-time and stops once each pool reaches its high-water. Live status under System &rarr; Scraper service.</p>
                 </div>
-              </template>
+              </div>
 
-              <div class="btn-row">
+              <!-- ===== CONNECTION ===== -->
+              <div x-show="configTab==='connection'" x-transition.opacity>
+                <div class="card">
+                  <div class="card-title">Credentials <span class="pill">.env on the server</span></div>
+                  <div class="form-grid">
+                    <div><label>Instagram username</label><input type="text" x-model="credUsername" autocomplete="off" /></div>
+                    <div><label>Instagram password</label><input type="password" x-model="credPassword" autocomplete="new-password" /></div>
+                  </div>
+                  <div class="btn-row" style="margin-top:16px;">
+                    <button class="primary" @click="saveCredentials()">Save credentials</button>
+                    <span class="field-hint" style="margin:0;" x-show="credentialsStatus" x-text="credentialsStatus"></span>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card-title">Browser</div>
+                  <div class="switch-grid" style="margin-bottom:14px;">
+                    <div class="switch-cell"><span class="sc-label">Headless (no window)</span><label class="switch"><input type="checkbox" x-model="config.browser.headless" /><span class="track"></span></label></div>
+                  </div>
+                  <div class="form-grid">
+                    <div><label>Locale</label><input type="text" x-model="config.browser.locale" /></div>
+                    <div><label>Viewport width</label><input type="number" x-model.number="config.browser.viewport_width" /></div>
+                    <div><label>Viewport height</label><input type="number" x-model.number="config.browser.viewport_height" /></div>
+                    <div class="full"><label>User agent</label><input type="text" x-model="config.browser.user_agent" /></div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card-title">Behavior <span class="pill">advanced</span></div>
+                  <div class="switch-grid" style="margin-bottom:14px;">
+                    <div class="switch-cell"><span class="sc-label">Use cached following list</span><label class="switch"><input type="checkbox" x-model="config.behavior.use_following_cache" /><span class="track"></span></label></div>
+                  </div>
+                  <div class="form-grid">
+                    <div><label>Warmup browse (s)</label><input type="number" x-model.number="config.behavior.warmup_browse_seconds" /></div>
+                    <div><label>Account re-sync every N actions</label><input type="number" x-model.number="config.behavior.account_resync_every" /></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="btn-row" style="margin-top:8px;">
                 <button class="primary" @click="saveConfig()">Save config</button>
                 <button @click="loadConfig()">Reload from disk</button>
+                <span class="field-hint" style="margin:0;">Sources, whitelist &amp; credentials have their own Save buttons above.</span>
               </div>
             </div>
           </template>
-        </div>
-
-        <!-- ============ WHITELIST ============ -->
-        <div x-show="tab==='whitelist'" x-transition.opacity>
-          <div class="page-head"><h1>Whitelist</h1><p>Excepted accounts - never unfollowed. Search below, or bulk-edit the raw text.</p></div>
-          <div class="card">
-            <div class="toolbar">
-              <div class="search">
-                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                <input type="text" placeholder="Search whitelist…" x-model="whitelistFilter" />
-              </div>
-              <span class="count-chip" x-text="whitelistEntries().length + ' / ' + whitelistAll().length + ' shown'"></span>
-            </div>
-            <div class="list-scroll" style="max-height:38vh;margin-bottom:18px;">
-              <template x-if="whitelistAll().length === 0"><div class="empty"><div class="t">Whitelist is empty</div></div></template>
-              <template x-if="whitelistAll().length > 0 && whitelistEntries().length === 0"><div class="empty"><div class="t">No matches</div></div></template>
-              <template x-for="name in whitelistEntries()" :key="name">
-                <div class="list-row">
-                  <div class="username"><span class="at">@</span><span x-text="name"></span></div>
-                  <div class="grow"></div>
-                  <button class="ghost sm" @click="removeFromWhitelist(name)">Remove</button>
-                </div>
-              </template>
-            </div>
-            <label>Raw whitelist <span style="text-transform:none;font-weight:400;color:var(--muted-2);">(one per line · <code>@</code> optional · <code>#</code> = comment)</span></label>
-            <textarea x-model="whitelistText"></textarea>
-            <div class="btn-row" style="margin-top:16px;">
-              <button class="primary" @click="saveWhitelist()">Save whitelist</button>
-              <button @click="loadWhitelist()">Reload from disk</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- ============ CREDENTIALS ============ -->
-        <div x-show="tab==='credentials'" x-transition.opacity>
-          <div class="page-head"><h1>Credentials</h1><p>Stored in <code>.env</code> on the server. The session cookie is cached after first login, so 2FA is only needed occasionally.</p></div>
-          <div class="card">
-            <div class="form-grid">
-              <div><label>Instagram username</label><input type="text" x-model="credUsername" autocomplete="off" /></div>
-              <div><label>Instagram password</label><input type="password" x-model="credPassword" autocomplete="new-password" /></div>
-            </div>
-            <div class="btn-row" style="margin-top:16px;">
-              <button class="primary" @click="saveCredentials()">Save credentials</button>
-              <span class="field-hint" style="margin:0;" x-show="credentialsStatus" x-text="credentialsStatus"></span>
-            </div>
-          </div>
         </div>
 
       </div>
@@ -1636,6 +1636,7 @@
         followTotals: { candidates: 0, pending: 0, followed: 0, follow_skipped: 0, follow_failed: 0, churn_unfollowed: 0, follow_kept: 0 },
         candidatesText: '',
         candidatesCount: 0,
+        configTab: 'limits',
         sourcesProfilesText: '',
         sourcesPostsText: '',
         sourcesCommentersText: '',
@@ -1709,10 +1710,13 @@
         },
 
         go(tab) {
+          // Sources / Whitelist / Credentials are now sections of the Config page
+          // (sub-tabs). Redirect their old nav entries there so links keep working.
+          const foldMap = { sources: 'targeting', whitelist: 'targeting', credentials: 'connection' };
+          if (foldMap[tab]) { this.configTab = foldMap[tab]; tab = 'config'; }
           this.tab = tab; this.sidebarOpen = false;
           if (tab === 'discovered') this.loadDiscovered();
           if (tab === 'analytics') this.loadAnalytics();
-          if (tab === 'sources') this.loadSources();
           if (tab === 'system') { this.startSysPolling(); this.loadScraper(); if (!this.deployGit) this.loadDeployStatus(); } else this.stopSysPolling();
         },
 
@@ -1774,7 +1778,7 @@
           return m + 'm';
         },
         fmtNum(n) { return n == null ? '-' : n.toLocaleString(); },
-        modeLabel(m) { return { unfollow: 'Unfollow', follow: 'Follow', churn: 'Marketing' }[m] || m; },
+        modeLabel(m) { return { unfollow: 'Unfollow', follow: 'Follow', marketing: 'Marketing', churn: 'Marketing' }[m] || m; },
         async saveWatchdog() {
           try {
             if (this.config) {
@@ -2046,8 +2050,8 @@
             this.sourcesPostsText = (j.liker_posts || []).join('\n');
             this.sourcesCommentersText = (j.commenter_posts || []).join('\n');
             this.sourcesHashtagsText = (j.hashtags || []).join('\n');
-            if (this.config && this.config.follow) {
-              this.config.follow.sources = j;
+            if (this.config && this.config.targeting) {
+              this.config.targeting.sources = j;
             }
             this.showToast('Sources saved', 'success');
           } catch (e) { this.showToast(e.message, 'error'); }
@@ -2174,21 +2178,24 @@
         async loadConfig() {
           try {
             this.config = await this.fetch('/api/config');
-            // Ensure the new follow sub-blocks exist so their config cards render
-            // even on configs saved before these features (defaults match config.yaml).
-            if (this.config && this.config.follow) {
-              const f = this.config.follow;
-              f.discovery = Object.assign({ enabled: false, keywords: [], negative_keywords: [], min_followers: 5000, max_followers: 500000 }, f.discovery || {});
-              f.engagement = Object.assign({ on_follow_view_story: true, on_follow_like_posts: 1, story_reach_enabled: true, story_reach_daily_cap: 100, story_reach_every_actions: 5, reach_mode: 'likes', reach_like_posts: 1, reach_source: 'hashtags', reach_view_story: true, story_reach_every_min: 1, story_reach_every_max: 4 }, f.engagement || {});
-              this.discoveryKeywordsText = (f.discovery.keywords || []).join('\n');
-              this.discoveryNegativeText = (f.discovery.negative_keywords || []).join('\n');
-            }
-            // Seed new pacing/scraper keys so their inputs render on configs saved
-            // before these features (existing values always win - defaults match config.yaml).
-            this.config.pacing = Object.assign({ active_hours_enabled: false, active_hours_start: 8, active_hours_end: 24, soft_block_max_per_day: 2, follow_fail_rest_threshold: 5, follow_fail_rest_min_seconds: 1200, follow_fail_rest_max_seconds: 2400, follow_rest_max_per_day: 3 }, this.config.pacing || {});
-            if (this.config.scraper) this.config.scraper = Object.assign({ reach_pool_high_mult: 5 }, this.config.scraper);
-            this.config.watchdog = Object.assign({ enabled: false, stuck_after_seconds: 600, min_restart_interval_seconds: 900 }, this.config.watchdog || {});
-            this.watchdog = Object.assign({}, this.config.watchdog);
+            // Seed every clean-schema block with defaults so all inputs render even on
+            // a config saved before a feature existed (existing values always win;
+            // defaults match config.yaml / upgrade_config.py).
+            const C = this.config; const A = (k, d) => { C[k] = Object.assign({}, d, C[k] || {}); };
+            A('limits', { follows_per_day: 80, unfollows_per_day: 80, likes_per_day: 100, combined_per_day: 0, daily_jitter: 0.3 });
+            A('pacing', { action_delay_min: 60, action_delay_max: 200, long_break_every: 15, long_break_min: 300, long_break_max: 900, distraction_chance: 0.08, distraction_min: 60, distraction_max: 240 });
+            A('safety', { active_hours_enabled: false, active_hours_start: 8, active_hours_end: 24, soft_block_max_per_day: 2, rate_limit_cooldown_min: 900, rate_limit_cooldown_max: 1800, follow_fail_rest_threshold: 5, follow_fail_rest_min: 1200, follow_fail_rest_max: 2400, follow_rest_max_per_day: 3 });
+            A('targeting', { candidate_pool_min: 300, scrape_per_source_cap: 600, scrape_per_seed_cap: 150, max_same_seed_streak: 2 });
+            C.targeting.sources = Object.assign({ profiles: [], post_likers: [], post_commenters: [], hashtags: [] }, C.targeting.sources || {});
+            C.targeting.filters = Object.assign({ skip_already_follows_me: true, skip_private: false, skip_no_posts: true, min_followers: 0, max_followers: 5000, max_following: 0 }, C.targeting.filters || {});
+            C.targeting.discovery = Object.assign({ enabled: false, keywords: [], negative_keywords: [], min_followers: 5000, max_followers: 500000 }, C.targeting.discovery || {});
+            A('engagement', { reach_enabled: true, reach_source: 'hashtags', reach_view_story: true, reach_hashtags: [], reach_cadence_min: 1, reach_cadence_max: 4, reach_cadence_fallback: 5, reach_like_posts: 1, on_follow_view_story: true, on_follow_like_posts: 1 });
+            A('marketing', { unfollow_after_days: 2, keep_followers_back: false, also_trim_following: false, list_trim_cap: 40, ratio_unfollows: 5, ratio_follows: 4 });
+            A('scraper', { enabled: false, external: false, keep_running: false, coordinate_with_bot: true, idle_recheck_min: 15, idle_recheck_max: 30, follow_pool_mult: 5, reach_pool_mult: 5, cdp_endpoint: '', idle_seconds: 600, filter_delay_min: 1, filter_delay_max: 3 });
+            this.discoveryKeywordsText = (C.targeting.discovery.keywords || []).join('\n');
+            this.discoveryNegativeText = (C.targeting.discovery.negative_keywords || []).join('\n');
+            C.watchdog = Object.assign({ enabled: false, stuck_after_seconds: 600, min_restart_interval_seconds: 900 }, C.watchdog || {});
+            this.watchdog = Object.assign({}, C.watchdog);
           } catch (e) { this.showToast(e.message, 'error'); }
         },
 
@@ -2203,10 +2210,10 @@
         async saveConfig() {
           try {
             // Sync the discovery keyword textareas back into the config arrays.
-            if (this.config && this.config.follow && this.config.follow.discovery) {
+            if (this.config && this.config.targeting && this.config.targeting.discovery) {
               const split = t => (t || '').split('\n').map(s => s.trim().toLowerCase()).filter(Boolean);
-              this.config.follow.discovery.keywords = split(this.discoveryKeywordsText);
-              this.config.follow.discovery.negative_keywords = split(this.discoveryNegativeText);
+              this.config.targeting.discovery.keywords = split(this.discoveryKeywordsText);
+              this.config.targeting.discovery.negative_keywords = split(this.discoveryNegativeText);
             }
             await this.fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: this._coerceBools(this.config) }) });
             this.showToast('Config saved', 'success');

@@ -9,6 +9,7 @@ Exposes:
 """
 
 import collections
+import copy
 import json
 import os
 import random
@@ -245,14 +246,182 @@ def parse_log_ts(s: str) -> Optional[float]:
         return None
 
 
+# --------------------------------------------------------------------------
+# Config schema migration (legacy → clean mode-oriented schema)
+#
+# The dashboard, config.yaml and the bot all speak ONE clean schema (blocks:
+# mode/limits/pacing/safety/targeting/engagement/marketing/scraper/browser/
+# behavior). `_migrate_config` rewrites an older config (or a partially-new one)
+# into that schema and is applied on every load, so a Pi still holding the legacy
+# config keeps running until `upgrade_config.py` rewrites the file in place.
+# It is idempotent: re-running on a new-schema config is a no-op.
+# --------------------------------------------------------------------------
+
+def _cfg_get(d: dict, path: str):
+    cur = d
+    for k in path.split("."):
+        if not isinstance(cur, dict) or k not in cur:
+            return (False, None)
+        cur = cur[k]
+    return (True, cur)
+
+
+def _cfg_set(d: dict, path: str, val) -> None:
+    cur = d
+    parts = path.split(".")
+    for k in parts[:-1]:
+        nxt = cur.get(k)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[k] = nxt
+        cur = nxt
+    cur[parts[-1]] = val
+
+
+def _cfg_del(d: dict, path: str) -> None:
+    cur = d
+    parts = path.split(".")
+    for k in parts[:-1]:
+        if not isinstance(cur, dict) or k not in cur:
+            return
+        cur = cur[k]
+    if isinstance(cur, dict):
+        cur.pop(parts[-1], None)
+
+
+# (old_path, new_path) — plain renames/moves. Whole sub-dicts are moved for
+# filters/discovery; source leaves are renamed individually below.
+_CONFIG_MOVES = [
+    # limits (daily ceilings, consolidated)
+    ("follow.daily_cap", "limits.follows_per_day"),
+    ("follow.engagement.story_reach_daily_cap", "limits.likes_per_day"),
+    ("pacing.daily_action_cap", "limits.combined_per_day"),
+    ("pacing.daily_volume_jitter", "limits.daily_jitter"),
+    # pacing (cleaned)
+    ("pacing.long_break_every_n", "pacing.long_break_every"),
+    ("pacing.long_break_min_seconds", "pacing.long_break_min"),
+    ("pacing.long_break_max_seconds", "pacing.long_break_max"),
+    ("pacing.distraction_min_seconds", "pacing.distraction_min"),
+    ("pacing.distraction_max_seconds", "pacing.distraction_max"),
+    ("pacing.daily_loop_hours", "behavior.daily_loop_hours"),
+    # safety (anti-block)
+    ("pacing.active_hours_enabled", "safety.active_hours_enabled"),
+    ("pacing.active_hours_start", "safety.active_hours_start"),
+    ("pacing.active_hours_end", "safety.active_hours_end"),
+    ("pacing.soft_block_max_per_day", "safety.soft_block_max_per_day"),
+    ("pacing.rate_limit_max_hits", "safety.rate_limit_max_hits"),
+    ("pacing.rate_limit_cooldown_min_seconds", "safety.rate_limit_cooldown_min"),
+    ("pacing.rate_limit_cooldown_max_seconds", "safety.rate_limit_cooldown_max"),
+    ("pacing.follow_fail_rest_threshold", "safety.follow_fail_rest_threshold"),
+    ("pacing.follow_fail_rest_min_seconds", "safety.follow_fail_rest_min"),
+    ("pacing.follow_fail_rest_max_seconds", "safety.follow_fail_rest_max"),
+    ("pacing.follow_rest_max_per_day", "safety.follow_rest_max_per_day"),
+    # targeting (sources + scrape knobs + filters + discovery)
+    ("follow.sources.follower_profiles", "targeting.sources.profiles"),
+    ("follow.sources.liker_posts", "targeting.sources.post_likers"),
+    ("follow.sources.commenter_posts", "targeting.sources.post_commenters"),
+    ("follow.sources.hashtags", "targeting.sources.hashtags"),
+    ("follow.candidate_pool_min", "targeting.candidate_pool_min"),
+    ("follow.scrape_per_source_cap", "targeting.scrape_per_source_cap"),
+    ("follow.scrape_per_seed_cap", "targeting.scrape_per_seed_cap"),
+    ("follow.max_same_seed_streak", "targeting.max_same_seed_streak"),
+    ("follow.filters", "targeting.filters"),
+    ("follow.discovery", "targeting.discovery"),
+    # engagement (promoted from follow.engagement; reach keys de-jargoned)
+    ("follow.engagement.story_reach_enabled", "engagement.reach_enabled"),
+    ("follow.engagement.reach_source", "engagement.reach_source"),
+    ("follow.engagement.reach_view_story", "engagement.reach_view_story"),
+    ("follow.engagement.reach_hashtags", "engagement.reach_hashtags"),
+    ("follow.engagement.story_reach_every_min", "engagement.reach_cadence_min"),
+    ("follow.engagement.story_reach_every_max", "engagement.reach_cadence_max"),
+    ("follow.engagement.story_reach_every_actions", "engagement.reach_cadence_fallback"),
+    ("follow.engagement.reach_external_harvest", "engagement.reach_external_harvest"),
+    ("follow.engagement.reach_max_same_tag_streak", "engagement.reach_max_same_tag_streak"),
+    ("follow.engagement.reach_scrape_per_tag", "engagement.reach_scrape_per_tag"),
+    ("follow.engagement.reach_like_min_delay", "engagement.reach_like_min_delay"),
+    ("follow.engagement.reach_like_max_delay", "engagement.reach_like_max_delay"),
+    ("follow.engagement.reach_mode", "engagement.reach_mode"),
+    ("follow.engagement.reach_like_posts", "engagement.reach_like_posts"),
+    ("follow.engagement.on_follow_view_story", "engagement.on_follow_view_story"),
+    ("follow.engagement.on_follow_like_posts", "engagement.on_follow_like_posts"),
+    ("follow.engagement.story_min_delay", "engagement.story_min_delay"),
+    ("follow.engagement.story_max_delay", "engagement.story_max_delay"),
+    ("follow.engagement.story_recheck_hours", "engagement.story_recheck_hours"),
+    ("follow.engagement.story_reach_background", "engagement.story_reach_background"),
+    # marketing (from follow.churn)
+    ("follow.churn.unfollow_after_days", "marketing.unfollow_after_days"),
+    ("follow.churn.keep_followers_back", "marketing.keep_followers_back"),
+    ("follow.churn.also_unfollow_following", "marketing.also_trim_following"),
+    ("follow.churn.list_unfollow_cap", "marketing.list_trim_cap"),
+    ("follow.churn.interleave_unfollows", "marketing.ratio_unfollows"),
+    ("follow.churn.interleave_follows", "marketing.ratio_follows"),
+    # scraper (+ autopilot pulled in)
+    ("follow.external_scraper", "scraper.external"),
+    ("behavior.keep_running", "scraper.keep_running"),
+    ("behavior.idle_recheck_min", "scraper.idle_recheck_min"),
+    ("behavior.idle_recheck_max", "scraper.idle_recheck_max"),
+    ("scraper.pool_high_mult", "scraper.follow_pool_mult"),
+    ("scraper.reach_pool_high_mult", "scraper.reach_pool_mult"),
+    ("scraper.min_delay", "scraper.filter_delay_min"),
+    ("scraper.max_delay", "scraper.filter_delay_max"),
+]
+
+# (new_path, [old_paths in priority order]) — value comes from the first old path
+# present. Used where two legacy keys collapse into one.
+_CONFIG_MERGES = [
+    ("limits.unfollows_per_day", ["follow.churn.daily_unfollow_cap", "pacing.daily_cap"]),
+    ("pacing.action_delay_min", ["follow.min_delay_seconds", "pacing.min_delay_seconds"]),
+    ("pacing.action_delay_max", ["follow.max_delay_seconds", "pacing.max_delay_seconds"]),
+]
+
+# Legacy keys fully consumed above — dropped so the rewritten file is clean.
+_CONFIG_DROP = [
+    "pacing.daily_cap", "pacing.min_delay_seconds", "pacing.max_delay_seconds",
+    "follow",  # everything under follow has been moved out
+]
+
+
+def _migrate_config(raw: dict) -> dict:
+    """Return `raw` rewritten into the clean schema. Idempotent."""
+    if not isinstance(raw, dict):
+        return raw
+    c = copy.deepcopy(raw)
+
+    if c.get("mode") == "churn":
+        c["mode"] = "marketing"
+
+    # Merges first (they read legacy keys that moves would otherwise delete).
+    for new_path, old_paths in _CONFIG_MERGES:
+        if _cfg_get(c, new_path)[0]:
+            continue  # already new-schema
+        for op in old_paths:
+            ok, val = _cfg_get(c, op)
+            if ok:
+                _cfg_set(c, new_path, val)
+                break
+
+    # Plain moves: only set the new key when it isn't already present (idempotent),
+    # then drop the old key so the rewritten file is clean.
+    for old_path, new_path in _CONFIG_MOVES:
+        ok, val = _cfg_get(c, old_path)
+        if ok and not _cfg_get(c, new_path)[0]:
+            _cfg_set(c, new_path, val)
+        _cfg_del(c, old_path)
+
+    for p in _CONFIG_DROP:
+        _cfg_del(c, p)
+
+    return c
+
+
 def load_config() -> dict:
     with open(CONFIG_PATH, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return _migrate_config(yaml.safe_load(f))
 
 
 def save_config(data: dict) -> None:
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+        yaml.safe_dump(_migrate_config(data), f, sort_keys=False, default_flow_style=False)
 
 
 def load_whitelist() -> set[str]:
@@ -1380,16 +1549,16 @@ class Bot:
         re-queues accounts it has already evaluated."""
         pool_read = pool_read or read_follow_candidates
         pool_write = pool_write or write_follow_candidates
-        follow_cfg = cfg.get("follow", {}) or {}
-        sources = follow_cfg.get("sources", {}) or {}
-        per_cap = int(follow_cfg.get("scrape_per_source_cap", 600))
-        pool_min = int(follow_cfg.get("candidate_pool_min", 300))
+        targeting = cfg.get("targeting", {}) or {}
+        sources = targeting.get("sources", {}) or {}
+        per_cap = int(targeting.get("scrape_per_source_cap", 600))
+        pool_min = int(targeting.get("candidate_pool_min", 300))
         # Per-SEED round-robin chunk: how many of a seed's raw usernames we drain
         # into the pool before rotating to the next seed. Keeps the todo/pool
         # interleaved across seeds instead of one big same-seed block (the filter
         # appends in todo order, so the eligible pool inherits this mixing). 0/neg
         # = no chunking (drain each seed fully, legacy-ish ordering).
-        seed_chunk = int(follow_cfg.get("scrape_per_seed_cap", 150))
+        seed_chunk = int(targeting.get("scrape_per_seed_cap", 150))
 
         my = (os.getenv("IG_USERNAME") or "").lower()
         done = self._follow_done_set(load_whitelist(), my)
@@ -1453,21 +1622,21 @@ class Bot:
             return hook, state
 
         tasks = []   # each: {"label","desc","scrape","exhausted"}
-        for prof in sources.get("follower_profiles", []) or []:
+        for prof in sources.get("profiles", []) or []:
             prof = _norm_profile(prof)
             if prof:
                 tasks.append({"label": f"followers:{prof}", "desc": f"@{prof} followers",
                               "scrape": (lambda hook, p=prof:
                                          self._scrape_list(page, p, "followers", per_cap, on_collect=hook)),
                               "exhausted": False})
-        for post in sources.get("liker_posts", []) or []:
+        for post in sources.get("post_likers", []) or []:
             post = _norm_post(post)
             if post:
                 tasks.append({"label": f"likers:{post}", "desc": f"likers of {post}",
                               "scrape": (lambda hook, u=post:
                                          self._scrape_likers(page, u, per_cap, on_collect=hook)),
                               "exhausted": False})
-        for post in sources.get("commenter_posts", []) or []:
+        for post in sources.get("post_commenters", []) or []:
             post = _norm_post(post)
             if post:
                 tasks.append({"label": f"commenters:{post}", "desc": f"commenters of {post}",
@@ -2364,12 +2533,12 @@ class Bot:
 
     def _reach_likes_left(self, cfg) -> int:
         """The reach pool's LOW-water mark = reach likes still allowed today. Uses the
-        same per-day 'likes' cap the bot enforces (seeded from story_reach_daily_cap),
+        same per-day 'likes' cap the bot enforces (seeded from limits.likes_per_day),
         so once the day's likes are spent an empty reach pool no longer blocks the bot."""
         try:
             L = self._ensure_ledger(cfg)
-            eng = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
-            cap = int(L.get("caps", {}).get("likes") or eng.get("story_reach_daily_cap", 100) or 0)
+            limits = cfg.get("limits", {}) or {}
+            cap = int(L.get("caps", {}).get("likes") or limits.get("likes_per_day", 100) or 0)
             return max(0, cap - int(L.get("likes", 0)))
         except Exception:
             return 0
@@ -2377,9 +2546,8 @@ class Bot:
     def _reach_tags(self, cfg) -> list:
         """The niche hashtags reach harvests from (reach_hashtags, else the shared
         follow.sources.hashtags). Empty = reach can't be filled, so it never gates."""
-        follow_cfg = cfg.get("follow", {}) or {}
-        eng = follow_cfg.get("engagement", {}) or {}
-        sources = follow_cfg.get("sources", {}) or {}
+        eng = cfg.get("engagement", {}) or {}
+        sources = (cfg.get("targeting", {}) or {}).get("sources", {}) or {}
         return [t.strip().lstrip("#").lower()
                 for t in (eng.get("reach_hashtags") or sources.get("hashtags") or [])
                 if t and t.strip()]
@@ -2387,8 +2555,8 @@ class Bot:
     def _reach_harvest_on(self, cfg) -> bool:
         """True when the burner should fill the reach pool and the main account should
         consume-only: reach enabled + external harvest + at least one hashtag to harvest."""
-        eng = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
-        return bool(eng.get("story_reach_enabled", False)
+        eng = cfg.get("engagement", {}) or {}
+        return bool(eng.get("reach_enabled", False)
                     and eng.get("reach_external_harvest", True)
                     and self._reach_tags(cfg))
 
@@ -2403,10 +2571,9 @@ class Bot:
         scr = cfg.get("scraper", {}) or {}
         if not scr.get("enabled", False):
             return True, ""   # scraper off → don't wait on pools it isn't filling
-        follow_cfg = cfg.get("follow", {}) or {}
         warm, parts = True, []
-        if mode in ("follow", "churn") and follow_cfg.get("external_scraper", False):
-            cap = int(follow_cfg.get("daily_cap", 30))
+        if mode in ("follow", "marketing") and scr.get("external", False):
+            cap = int((cfg.get("limits", {}) or {}).get("follows_per_day", 30))
             ready = self._pool_ready(cfg)
             parts.append(f"follow {ready}/{cap}")
             if ready < cap:
@@ -2493,11 +2660,10 @@ class Bot:
         goes, so the bot reads a clean eligible-only list with no comparison. Stops
         once the eligible pool reaches `target` (default the follow high-water mark)
         so it can hand the burner over to reach harvesting instead of over-filling."""
-        follow_cfg = cfg.get("follow", {}) or {}
-        filters = follow_cfg.get("filters", {}) or {}
+        filters = (cfg.get("targeting", {}) or {}).get("filters", {}) or {}
         scr = cfg.get("scraper", {}) or {}
-        min_d = float(scr.get("min_delay", 1.5))
-        max_d = float(scr.get("max_delay", 4))
+        min_d = float(scr.get("filter_delay_min", 1.5))
+        max_d = float(scr.get("filter_delay_max", 4))
         long_every = int(scr.get("long_break_every", 40))
         long_min = float(scr.get("long_break_min", 60))
         long_max = float(scr.get("long_break_max", 180))
@@ -2523,7 +2689,8 @@ class Bot:
         self._write_scraper_status(phase=f"vetting {len(pending)}")
         coordinate = scr.get("coordinate_with_bot", True)
         if target is None:
-            target = max(1, int(follow_cfg.get("daily_cap", 30)) * int(scr.get("pool_high_mult", 5)))
+            follows_cap = int((cfg.get("limits", {}) or {}).get("follows_per_day", 30))
+            target = max(1, follows_cap * int(scr.get("follow_pool_mult", 5)))
         processed = 0
         for c in todo:
             if self._stop_event.is_set():
@@ -2668,19 +2835,18 @@ class Bot:
                     # once it's used today's room). Idle once both pools hit their target.
                     coordinate = scr.get("coordinate_with_bot", True)
                     mode = day_cfg.get("mode", "unfollow")
-                    follow_cfg = day_cfg.get("follow", {}) or {}
-                    eng = follow_cfg.get("engagement", {}) or {}
-                    mult = int(scr.get("pool_high_mult", 5))
+                    limits = day_cfg.get("limits", {}) or {}
+                    mult = int(scr.get("follow_pool_mult", 5))
                     # Fill whichever pool the bot will actually consume: the FOLLOW pool
-                    # only in follow/churn, the REACH pool only when reach is enabled.
-                    follow_need = mode in ("follow", "churn")
-                    follow_low = int(follow_cfg.get("daily_cap", 30))
+                    # only in follow/marketing, the REACH pool only when reach is enabled.
+                    follow_need = mode in ("follow", "marketing")
+                    follow_low = int(limits.get("follows_per_day", 30))
                     follow_high = max(1, follow_low * mult)
                     follow_ready = self._pool_ready(day_cfg)
                     reach_need = self._reach_harvest_on(day_cfg)
                     reach_low = self._reach_likes_left(day_cfg) if reach_need else 0
-                    reach_mult = int(scr.get("reach_pool_high_mult", mult) or mult)
-                    reach_high = max(1, int(eng.get("story_reach_daily_cap", 100) or 100) * reach_mult)
+                    reach_mult = int(scr.get("reach_pool_mult", mult) or mult)
+                    reach_high = max(1, int(limits.get("likes_per_day", 100) or 100) * reach_mult)
                     reach_ready = self._reach_pool_ready()
                     # STAGE 2 gate - may this pool build past low-water? Build the
                     # high-water buffer either when the bot is DONE for the day (used up
@@ -2882,8 +3048,8 @@ class Bot:
         my = (os.getenv("IG_USERNAME") or "").lower()
         if target == my:
             return
-        sources = (load_config().get("follow", {}) or {}).get("sources", {}) or {}
-        if target in {s.lstrip("@").lower() for s in (sources.get("follower_profiles") or [])}:
+        sources = (load_config().get("targeting", {}) or {}).get("sources", {}) or {}
+        if target in {s.lstrip("@").lower() for s in (sources.get("profiles") or [])}:
             return
         queue = read_discovered_sources()
         if any(r["username"] == target for r in queue):
@@ -3330,8 +3496,8 @@ class Bot:
         of checking each only once - so story-reach keeps running, but we don't spam
         the same account in a tight loop."""
         my = (os.getenv("IG_USERNAME") or "").lower()
-        recheck_h = float((load_config().get("follow", {}) or {})
-                          .get("engagement", {}).get("story_recheck_hours", 20) or 0)
+        recheck_h = float((load_config().get("engagement", {}) or {})
+                          .get("story_recheck_hours", 20) or 0)
         cutoff = (time.time() - recheck_h * 3600) if recheck_h > 0 else None
         story_log = _log_path("story_viewed_log", "data/story_viewed.log")
         last_checked: dict = {}
@@ -3373,11 +3539,8 @@ class Bot:
     # past a safe daily volume the way per-batch caps allowed.
 
     def _roll_daily_caps(self, cfg) -> dict:
-        follow_cfg = cfg.get("follow", {}) or {}
-        churn_cfg = follow_cfg.get("churn", {}) or {}
-        eng = follow_cfg.get("engagement", {}) or {}
-        pacing = cfg.get("pacing", {}) or {}
-        jit = float(pacing.get("daily_volume_jitter", 0.3))
+        limits = cfg.get("limits", {}) or {}
+        jit = float(limits.get("daily_jitter", 0.3))
 
         def r(base):
             base = float(base or 0)
@@ -3386,10 +3549,10 @@ class Bot:
             return max(1, int(round(base * random.uniform(1 - jit, 1 + jit))))
 
         return {
-            "follows": r(follow_cfg.get("daily_cap", 30)),
-            "unfollows": r(churn_cfg.get("daily_unfollow_cap", 30)),
-            "likes": r(eng.get("story_reach_daily_cap", 50)),
-            "combined": r(pacing.get("daily_action_cap", 0)),   # 0 = no combined cap
+            "follows": r(limits.get("follows_per_day", 30)),
+            "unfollows": r(limits.get("unfollows_per_day", 30)),
+            "likes": r(limits.get("likes_per_day", 50)),
+            "combined": r(limits.get("combined_per_day", 0)),   # 0 = no combined cap
         }
 
     def _ensure_ledger(self, cfg) -> dict:
@@ -3462,11 +3625,11 @@ class Bot:
         return int(L["soft_blocks"])
 
     def _active_window(self, cfg):
-        pacing = cfg.get("pacing", {}) or {}
-        if not pacing.get("active_hours_enabled", False):
+        safety = cfg.get("safety", {}) or {}
+        if not safety.get("active_hours_enabled", False):
             return None
-        return (int(pacing.get("active_hours_start", 8)),
-                int(pacing.get("active_hours_end", 24)))
+        return (int(safety.get("active_hours_start", 8)),
+                int(safety.get("active_hours_end", 24)))
 
     def _in_active_hours(self, cfg) -> bool:
         win = self._active_window(cfg)
@@ -3506,14 +3669,14 @@ class Bot:
         exponential cooldown, and stop for the day after too many. IG action-blocks
         last hours-to-days, so resuming after 15 min just re-arms the block.
         Returns 'block' (stop the run) or 'cooldown' (backed off, resume)."""
-        pacing = cfg.get("pacing", {}) or {}
+        safety = cfg.get("safety", {}) or {}
         n = self._record_soft_block(cfg)
         append_event("soft_block", f"#{n} today")
-        if n >= int(pacing.get("soft_block_max_per_day", 2)):
+        if n >= int(safety.get("soft_block_max_per_day", 2)):
             self.state.update(phase_detail=f"{n} soft-blocks today - stopping for the day")
             return "block"
-        lo = float(pacing.get("rate_limit_cooldown_min_seconds", 3600))
-        hi = float(pacing.get("rate_limit_cooldown_max_seconds", 7200))
+        lo = float(safety.get("rate_limit_cooldown_min", 3600))
+        hi = float(safety.get("rate_limit_cooldown_max", 7200))
         cooldown = random.uniform(lo, hi) * (2 ** (n - 1))   # exponential per hit
         self.state.update(phase_detail=f"soft block #{n} - cooling down {cooldown / 3600:.1f}h")
         self._interruptible_sleep(cooldown)
@@ -3522,7 +3685,7 @@ class Bot:
     def _day_capped_for_mode(self, cfg, mode) -> bool:
         if mode == "follow":
             return self._day_room("follows", cfg) <= 0
-        if mode == "churn":
+        if mode == "marketing":
             return (self._day_room("follows", cfg) <= 0
                     and self._day_room("unfollows", cfg) <= 0)
         if mode == "unfollow":
@@ -3535,7 +3698,7 @@ class Bot:
         Likes work on any PUBLIC account (high hit rate); stories need an active,
         viewable story (rare). Logs + feeds only on a real action. Returns
         'liked' / 'viewed' / 'ratelimit' / '' (nothing) so the caller can pace."""
-        eng = (load_config().get("follow", {}) or {}).get("engagement", {}) or {}
+        eng = load_config().get("engagement", {}) or {}
         mode = (eng.get("reach_mode") or "likes").lower()
         self.state.update(phase_detail=f"reach: checking @{u}")
         parts, rate_limited = [], False
@@ -3645,14 +3808,15 @@ class Bot:
         adds nothing ends the pass, and the outer loop idles before retrying."""
         if not self._reach_harvest_on(cfg):
             return
-        eng = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
+        eng = cfg.get("engagement", {}) or {}
         tags = self._reach_tags(cfg)
         scr = cfg.get("scraper", {}) or {}
-        mult = int(scr.get("pool_high_mult", 5))
+        mult = int(scr.get("reach_pool_mult", scr.get("follow_pool_mult", 5)) or 5)
         if target is None:
-            target = max(1, int(eng.get("story_reach_daily_cap", 100) or 100) * mult)
+            likes_cap = int((cfg.get("limits", {}) or {}).get("likes_per_day", 100) or 100)
+            target = max(1, likes_cap * mult)
         per_tag = int(eng.get("reach_scrape_per_tag", 60) or 60)
-        lo, hi = float(scr.get("min_delay", 1)), float(scr.get("max_delay", 3))
+        lo, hi = float(scr.get("filter_delay_min", 1)), float(scr.get("filter_delay_max", 3))
 
         liked = self._reach_liked_set()
         pool = [e for e in read_reach_pool() if e["url"] not in liked]   # prune visited
@@ -3727,7 +3891,7 @@ class Bot:
         (IG gates these pages when hit too often)."""
         if eng.get("reach_external_harvest", True):
             return self._next_reach_post_from_pool(eng)
-        sources = (load_config().get("follow", {}) or {}).get("sources", {}) or {}
+        sources = (load_config().get("targeting", {}) or {}).get("sources", {}) or {}
         tags = [t.strip().lstrip("#").lower()
                 for t in (eng.get("reach_hashtags") or sources.get("hashtags") or [])
                 if t and t.strip()]
@@ -3872,8 +4036,9 @@ class Bot:
         """One reach action, per `engagement.reach_source`:
         'hashtags' (default - like public posts under niche hashtags) or 'pool'
         (legacy - engage candidate-pool members)."""
-        eng = (load_config().get("follow", {}) or {}).get("engagement", {}) or {}
-        cap = int(eng.get("story_reach_daily_cap", 100) or 0)
+        cfg = load_config()
+        eng = cfg.get("engagement", {}) or {}
+        cap = int((cfg.get("limits", {}) or {}).get("likes_per_day", 100) or 0)
         if cap and self._story_today >= cap:
             return "cap"
         if (eng.get("reach_source") or "hashtags").lower() == "hashtags":
@@ -3902,8 +4067,8 @@ class Bot:
             self.state.emit("log", {"level": "info",
                                     "msg": "story-reach: background worker gone - using interleaved mode"})
         cfg = load_config()
-        eng = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
-        if not eng.get("story_reach_enabled", False):
+        eng = cfg.get("engagement", {}) or {}
+        if not eng.get("reach_enabled", False):
             return
         # Respect the per-day like cap + active hours (reach is mostly likes).
         if not self._can_act("likes", cfg):
@@ -3918,9 +4083,9 @@ class Bot:
         self._reach_one(page)
 
     def _roll_reach_interval(self, eng) -> int:
-        lo = int(eng.get("story_reach_every_min",
-                         eng.get("story_reach_every_actions", 1)) or 1)
-        hi = int(eng.get("story_reach_every_max", lo + 3) or lo)
+        lo = int(eng.get("reach_cadence_min",
+                         eng.get("reach_cadence_fallback", 1)) or 1)
+        hi = int(eng.get("reach_cadence_max", lo + 3) or lo)
         lo = max(1, lo)
         return random.randint(lo, max(lo, hi))
 
@@ -3942,7 +4107,7 @@ class Bot:
                 ctx = sp_browser.contexts[0] if sp_browser.contexts else sp_browser.new_context()
                 page = ctx.new_page()   # our own dedicated tab
                 n = len(self._build_story_queue())
-                mode0 = ((load_config().get("follow", {}) or {}).get("engagement", {}) or {}).get("reach_mode", "likes")
+                mode0 = (load_config().get("engagement", {}) or {}).get("reach_mode", "likes")
                 self.state.emit("log", {"level": "info",
                     "msg": f"reach worker live ({mode0}) - {n} candidates queued"})
                 try:
@@ -3951,11 +4116,12 @@ class Bot:
                         if self._pause_event.is_set():
                             time.sleep(0.5)
                             continue
-                        eng = (load_config().get("follow", {}) or {}).get("engagement", {}) or {}
-                        if not eng.get("story_reach_enabled", False):
+                        rc = load_config()
+                        eng = rc.get("engagement", {}) or {}
+                        if not eng.get("reach_enabled", False):
                             self._story_sleep(5)
                             continue
-                        cap = int(eng.get("story_reach_daily_cap", 100) or 0)
+                        cap = int((rc.get("limits", {}) or {}).get("likes_per_day", 100) or 0)
                         if cap and self._story_today >= cap:
                             self._story_sleep(60)
                             continue
@@ -4018,9 +4184,12 @@ class Bot:
         cap). `set_gauge=False` skips the follow/unfollow header gauge updates so
         this can run as a churn add-on (see `_process_list_trim`) without
         clobbering the churn progress display."""
-        cap = pacing["daily_cap"] if cap is None else int(cap)
         if cfg is None:
             cfg = load_config()
+        if cap is None:
+            cap = int((cfg.get("limits", {}) or {}).get("unfollows_per_day", 80))
+        else:
+            cap = int(cap)
         whitelist = load_whitelist()
         done_set = {row["username"].lower() for row in read_unfollowed_log()}
         done_set |= {row["username"].lower() for row in read_skipped_log()}
@@ -4141,16 +4310,16 @@ class Bot:
             # dead accounts quickly instead of waiting minutes.
             if result == "ok":
                 self._jitter(
-                    pacing["min_delay_seconds"],
-                    pacing["max_delay_seconds"],
+                    pacing["action_delay_min"],
+                    pacing["action_delay_max"],
                     pacing.get("distraction_chance", 0),
-                    pacing.get("distraction_min_seconds", 0),
-                    pacing.get("distraction_max_seconds", 0),
+                    pacing.get("distraction_min", 0),
+                    pacing.get("distraction_max", 0),
                 )
-                if processed > 0 and processed % pacing["long_break_every_n"] == 0:
+                if processed > 0 and processed % pacing["long_break_every"] == 0:
                     pause = random.uniform(
-                        pacing["long_break_min_seconds"],
-                        pacing["long_break_max_seconds"],
+                        pacing["long_break_min"],
+                        pacing["long_break_max"],
                     )
                     self.state.update(phase_detail=f"long break {pause:.0f}s")
                     self._interruptible_sleep(pause)
@@ -4234,14 +4403,14 @@ class Bot:
         limit is hit (more may remain), 'exhausted' only when the pool is empty.
         'rest' = a sustained run of follow failures (IG gating) - the caller backs
         off and resumes (the streak is tracked across batches, not just this call)."""
-        follow_cfg = cfg.get("follow", {}) or {}
         pacing = cfg["pacing"]
-        filters = follow_cfg.get("filters", {}) or {}
-        disc_cfg = follow_cfg.get("discovery", {}) or {}
-        eng_cfg = follow_cfg.get("engagement", {}) or {}
-        daily_cap = int(follow_cfg.get("daily_cap", 80))
-        min_delay = follow_cfg.get("min_delay_seconds", 60)
-        max_delay = follow_cfg.get("max_delay_seconds", 200)
+        targeting = cfg.get("targeting", {}) or {}
+        filters = targeting.get("filters", {}) or {}
+        disc_cfg = targeting.get("discovery", {}) or {}
+        eng_cfg = cfg.get("engagement", {}) or {}
+        daily_cap = int((cfg.get("limits", {}) or {}).get("follows_per_day", 80))
+        min_delay = pacing.get("action_delay_min", 60)
+        max_delay = pacing.get("action_delay_max", 200)
 
         followed_log = _log_path("followed_log", "data/followed.log")
         skipped_log = _log_path("follow_skipped_log", "data/follow_skipped.log")
@@ -4251,16 +4420,16 @@ class Bot:
         my_username = (os.getenv("IG_USERNAME") or "").lower()
         done_set = self._follow_done_set(whitelist, my_username)
 
-        sources = follow_cfg.get("sources", {}) or {}
-        has_sources = bool((sources.get("follower_profiles") or [])
-                           or (sources.get("liker_posts") or []))
-        external_scraper = bool(follow_cfg.get("external_scraper", False))
-        pool_min = int(follow_cfg.get("candidate_pool_min", 300))
+        sources = targeting.get("sources", {}) or {}
+        has_sources = bool((sources.get("profiles") or [])
+                           or (sources.get("post_likers") or []))
+        external_scraper = bool((cfg.get("scraper", {}) or {}).get("external", False))
+        pool_min = int(targeting.get("candidate_pool_min", 300))
         # Source diversity: don't follow the same seed (target's followers / one
         # hashtag / one post) more than this many times in a row while another
         # seed is available, so any window of follows is spread across sources.
         # 0/1 = strongest spread; <=0 disables (pure intent-priority order).
-        max_same_seed = int(follow_cfg.get("max_same_seed_streak", 2))
+        max_same_seed = int(targeting.get("max_same_seed_streak", 2))
 
         processed = 0
         attempts = 0             # accounts touched this call (for the batch limit)
@@ -4392,7 +4561,7 @@ class Bot:
                 # rest (close the browser, let the scraper work + IG cool down) instead
                 # of hammering. The caller turns this into a backed-off resume.
                 self._follow_fail_streak += 1
-                rest_at = int(pacing.get("follow_fail_rest_threshold", 5))
+                rest_at = int((cfg.get("safety", {}) or {}).get("follow_fail_rest_threshold", 5))
                 self.state.update(follow_failed_count=new_failed,
                                   last_message=f"failed @{target}: {result} "
                                                f"({self._follow_fail_streak}/{rest_at})")
@@ -4413,13 +4582,13 @@ class Bot:
                     min_delay,
                     max_delay,
                     pacing.get("distraction_chance", 0),
-                    pacing.get("distraction_min_seconds", 0),
-                    pacing.get("distraction_max_seconds", 0),
+                    pacing.get("distraction_min", 0),
+                    pacing.get("distraction_max", 0),
                 )
-                if processed > 0 and processed % pacing["long_break_every_n"] == 0:
+                if processed > 0 and processed % pacing["long_break_every"] == 0:
                     pause = random.uniform(
-                        pacing["long_break_min_seconds"],
-                        pacing["long_break_max_seconds"],
+                        pacing["long_break_min"],
+                        pacing["long_break_max"],
                     )
                     self.state.update(phase_detail=f"long break {pause:.0f}s")
                     self._interruptible_sleep(pause)
@@ -4437,17 +4606,17 @@ class Bot:
         the activity reads as steady mixed marketing. The story-reach layer keeps
         firing inside each batch (every action calls the reach tick), so reach runs
         alongside automatically. Returns 'cap'/'exhausted'/'stopped'/'block'/'rest'."""
-        follow_cfg = cfg.get("follow", {}) or {}
-        churn_cfg = follow_cfg.get("churn", {}) or {}
-        unf_per = max(1, int(churn_cfg.get("interleave_unfollows", 2)))
-        fol_per = max(1, int(churn_cfg.get("interleave_follows", 1)))
-        also_trim = bool(churn_cfg.get("also_unfollow_following", False))
+        mkt = cfg.get("marketing", {}) or {}
+        limits = cfg.get("limits", {}) or {}
+        unf_per = max(1, int(mkt.get("ratio_unfollows", 2)))
+        fol_per = max(1, int(mkt.get("ratio_follows", 1)))
+        also_trim = bool(mkt.get("also_trim_following", False))
 
         # Approximate per-cycle budgets (rounds × batch). Real actions may be fewer
         # when accounts skip, which only makes us gentler - safe.
-        u_cap = int(churn_cfg.get("daily_unfollow_cap", 80))
-        t_cap = int(churn_cfg.get("list_unfollow_cap", 40))
-        f_cap = int(follow_cfg.get("daily_cap", 80))
+        u_cap = int(limits.get("unfollows_per_day", 80))
+        t_cap = int(mkt.get("list_trim_cap", 40))
+        f_cap = int(limits.get("follows_per_day", 80))
         u_used = t_used = f_used = 0
         # 'dead' = that source ran out of accounts (exhausted) this cycle.
         u_dead = False
@@ -4528,8 +4697,7 @@ class Bot:
             following = []
         if not following:
             return "exhausted"
-        churn_cfg = (cfg.get("follow", {}) or {}).get("churn", {}) or {}
-        cap = int(churn_cfg.get("list_unfollow_cap", 40))
+        cap = int((cfg.get("marketing", {}) or {}).get("list_trim_cap", 40))
         self.state.update(phase_detail=f"churn add-on: trimming following list (cap {cap})")
         return self._process_day(
             page, following, cfg["pacing"],
@@ -4546,14 +4714,13 @@ class Bot:
         max_actions caps how many accounts are touched this call (for interleaving)
         - 'cap' is returned when that batch limit is hit (more may remain),
         'exhausted' only when nothing is left to review."""
-        follow_cfg = cfg.get("follow", {}) or {}
-        churn_cfg = follow_cfg.get("churn", {}) or {}
+        mkt = cfg.get("marketing", {}) or {}
         pacing = cfg["pacing"]
-        after_days = float(churn_cfg.get("unfollow_after_days", 4))
-        keep_back = bool(churn_cfg.get("keep_followers_back", True))
-        daily_unfollow_cap = int(churn_cfg.get("daily_unfollow_cap", 80))
-        min_delay = follow_cfg.get("min_delay_seconds", 60)
-        max_delay = follow_cfg.get("max_delay_seconds", 200)
+        after_days = float(mkt.get("unfollow_after_days", 4))
+        keep_back = bool(mkt.get("keep_followers_back", True))
+        daily_unfollow_cap = int((cfg.get("limits", {}) or {}).get("unfollows_per_day", 80))
+        min_delay = pacing.get("action_delay_min", 60)
+        max_delay = pacing.get("action_delay_max", 200)
 
         churn_log = _log_path("churn_unfollowed_log", "data/churn_unfollowed.log")
         kept_log = _log_path("follow_kept_log", "data/follow_kept.log")
@@ -4657,12 +4824,12 @@ class Bot:
                     self._jitter(
                         min_delay, max_delay,
                         pacing.get("distraction_chance", 0),
-                        pacing.get("distraction_min_seconds", 0),
-                        pacing.get("distraction_max_seconds", 0),
+                        pacing.get("distraction_min", 0),
+                        pacing.get("distraction_max", 0),
                     )
-                    if processed > 0 and processed % pacing["long_break_every_n"] == 0:
-                        pause = random.uniform(pacing["long_break_min_seconds"],
-                                               pacing["long_break_max_seconds"])
+                    if processed > 0 and processed % pacing["long_break_every"] == 0:
+                        pause = random.uniform(pacing["long_break_min"],
+                                               pacing["long_break_max"])
                         self.state.update(phase_detail=f"long break {pause:.0f}s")
                         self._interruptible_sleep(pause)
                 else:
@@ -4840,10 +5007,12 @@ class Bot:
             failed_log = ROOT / cfg["logging"]["failed_log"]
             skipped_log = ROOT / cfg["logging"].get("skipped_log", "data/skipped.log")
 
-            # The follow daily cap drives the header gauge in follow/churn modes.
+            # The follow daily cap drives the header gauge in follow/marketing modes.
+            _limits = cfg.get("limits", {}) or {}
             start_cap = (
-                int((cfg.get("follow", {}) or {}).get("daily_cap", 80))
-                if mode in ("follow", "churn") else pacing["daily_cap"]
+                int(_limits.get("follows_per_day", 80))
+                if mode in ("follow", "marketing")
+                else int(_limits.get("unfollows_per_day", 80))
             )
             self.state.update(
                 status="starting", started_at=time.time(),
@@ -4939,16 +5108,16 @@ class Bot:
                     conn.update(browser=None, context=None, page=None, ok=False)
 
                 # Reach-enabled confirmation log (no browser needed).
-                eng_cfg0 = (cfg.get("follow", {}) or {}).get("engagement", {}) or {}
-                if eng_cfg0.get("story_reach_enabled", False):
-                    srcs = (cfg.get("follow", {}) or {}).get("sources", {}) or {}
+                eng_cfg0 = cfg.get("engagement", {}) or {}
+                if eng_cfg0.get("reach_enabled", False):
+                    srcs = (cfg.get("targeting", {}) or {}).get("sources", {}) or {}
                     tags = [t for t in (eng_cfg0.get("reach_hashtags") or srcs.get("hashtags") or []) if t]
                     self.state.emit("log", {"level": "info" if tags else "error",
                         "msg": (f"reach enabled (in-loop) - {len(tags)} hashtag(s) loaded" if tags
                                 else "reach is ON but NO hashtags configured - add some in Sources → Hashtags")})
 
                 daily_loop = bool(behavior.get("daily_loop", False))
-                loop_hours = float(pacing.get("daily_loop_hours", 24))
+                loop_hours = float(behavior.get("daily_loop_hours", 24))
 
                 while not self._stop_event.is_set():
                     # Re-read config each day so dashboard edits (e.g. the daily
@@ -5040,15 +5209,16 @@ class Bot:
                     # (account counts already refreshed on connect in ensure_connected)
                     self._reset_story_reach()
 
+                    _day_limits = day_cfg.get("limits", {}) or {}
                     if mode == "follow":
                         outcome = self._process_follow_day(page, day_cfg)
-                    elif mode == "churn":
+                    elif mode == "marketing":
                         self.state.update(
-                            daily_cap=int((day_cfg.get("follow", {}) or {}).get("daily_cap", 80))
+                            daily_cap=int(_day_limits.get("follows_per_day", 80))
                         )
                         outcome = self._process_churn_cycle(page, day_cfg)
                     else:
-                        self.state.update(daily_cap=pacing["daily_cap"])
+                        self.state.update(daily_cap=int(_day_limits.get("unfollows_per_day", 80)))
                         outcome = self._process_day(
                             page, following, pacing, unfollowed_log, failed_log, skipped_log
                         )
@@ -5090,7 +5260,8 @@ class Bot:
                         L["follow_rests"] = int(L.get("follow_rests", 0)) + 1
                         self._save_ledger()
                         rests = int(L["follow_rests"])
-                        max_rests = int(pacing.get("follow_rest_max_per_day", 3))
+                        _safety = day_cfg.get("safety", {}) or {}
+                        max_rests = int(_safety.get("follow_rest_max_per_day", 3))
                         append_event("follow_rest", f"#{rests} today")
                         if max_rests > 0 and rests >= max_rests:
                             self.state.update(
@@ -5101,8 +5272,8 @@ class Bot:
                             self.state.emit("log", {"level": "error",
                                 "msg": f"follow gating persisted after {rests} rests - hard stop"})
                             break
-                        lo = float(pacing.get("follow_fail_rest_min_seconds", 1200))
-                        hi = float(pacing.get("follow_fail_rest_max_seconds", 2400))
+                        lo = float(_safety.get("follow_fail_rest_min", 1200))
+                        hi = float(_safety.get("follow_fail_rest_max", 2400))
                         rest_s = random.uniform(min(lo, hi), max(lo, hi))
                         disconnect(); self._set_acting(False)
                         self._follow_fail_streak = 0
@@ -5116,9 +5287,9 @@ class Bot:
                         self._interruptible_sleep(rest_s)
                         self.state.update(next_action_at=None)
                         continue
-                    day_behavior = day_cfg.get("behavior", {}) or {}
-                    keep_running = (bool(day_behavior.get("keep_running", False))
-                                    and mode in ("follow", "churn"))
+                    day_scraper = day_cfg.get("scraper", {}) or {}
+                    keep_running = (bool(day_scraper.get("keep_running", False))
+                                    and mode in ("follow", "marketing"))
 
                     if not daily_loop and not keep_running:
                         break  # one-shot mode: a single batch then stop
@@ -5127,8 +5298,8 @@ class Bot:
                         # Don't hard-stop when the pool is empty - sleep a short,
                         # randomized interval and re-check. A background scraper
                         # service refills the pool; churn-unfollows keep maturing.
-                        lo = float(day_behavior.get("idle_recheck_min", 15))
-                        hi = float(day_behavior.get("idle_recheck_max", 30))
+                        lo = float(day_scraper.get("idle_recheck_min", 15))
+                        hi = float(day_scraper.get("idle_recheck_max", 30))
                         sleep_s = random.uniform(min(lo, hi), max(lo, hi)) * 60
                         note = ("pool empty - waiting for fresh candidates"
                                 if outcome == "exhausted" else "cycle done - re-checking")
@@ -5197,8 +5368,8 @@ class Bot:
             cfg = load_config()
             browser_cfg = cfg["browser"]
             DATA_DIR.mkdir(exist_ok=True)
-            sources = (cfg.get("follow", {}) or {}).get("sources", {}) or {}
-            if not ((sources.get("follower_profiles") or []) or (sources.get("liker_posts") or [])):
+            sources = (cfg.get("targeting", {}) or {}).get("sources", {}) or {}
+            if not ((sources.get("profiles") or []) or (sources.get("post_likers") or [])):
                 self.state.update(status="error",
                                   error="No sources configured - add follower profiles or post URLs.")
                 return

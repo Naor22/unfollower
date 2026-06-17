@@ -1,111 +1,155 @@
-"""Add the follow/churn config keys to an existing config.yaml in place.
+"""Migrate config.yaml to the clean mode-oriented schema, in place.
 
-Run this once after upgrading an older deployment (e.g. the Pi's unfollow-only
-config) to the follow/churn version. It injects `mode`, the `follow:` block, and
-the new follow log paths with sensible defaults ONLY where they're missing — it
-never changes values you've already set (daily caps, browser, server, etc.).
+Run this once after deploying the schema-rebuild (e.g. on the Pi, which keeps its
+own config.yaml). It loads the existing config, rewrites it to the new schema via
+`bot._migrate_config` (preserving every tuned value), fills any missing new keys
+with sensible defaults, and saves. Idempotent - re-running adds nothing.
 
     python upgrade_config.py
 
 Note: like every config save, this rewrites config.yaml via yaml.safe_dump, so
-comments are dropped (the values are preserved).
+comments are dropped (values are preserved). Back up first if you keep comments:
+    cp config.yaml config.yaml.bak
 """
 
 import bot
 
-DEFAULT_FOLLOW = {
-    "sources": {"follower_profiles": [], "liker_posts": []},
-    "daily_cap": 80,
-    "min_delay_seconds": 60,
-    "max_delay_seconds": 200,
-    "candidate_pool_min": 300,
-    "scrape_per_source_cap": 600,
-    "scrape_per_seed_cap": 150,    # source mix (scrape): per-seed round-robin chunk (0 = off)
-    "max_same_seed_streak": 2,     # source mix (consume): max same-seed follows in a row (0 = off)
-    "external_scraper": False,   # true = the separate scraper service owns the pool
-    "filters": {
-        "skip_already_follows_me": True,
-        "skip_private": True,
-        "skip_no_posts": True,
-        "min_followers": 0,
-        "max_followers": 5000,
-        "max_following": 0,
+# New-schema defaults — only MISSING keys are added (_deep_fill never overwrites).
+DEFAULTS = {
+    "mode": "follow",
+    "limits": {
+        "follows_per_day": 80,
+        "unfollows_per_day": 80,
+        "likes_per_day": 100,
+        "combined_per_day": 0,      # follows+unfollows ceiling (0 = off)
+        "daily_jitter": 0.3,
     },
-    "churn": {
-        "unfollow_after_days": 4,
-        "keep_followers_back": True,
-        "daily_unfollow_cap": 80,
-        "also_unfollow_following": False,  # also trim the existing following list each cycle
-        "list_unfollow_cap": 40,           # max list-trim unfollows per churn cycle
-        "interleave_unfollows": 2,         # interleave ratio (unfollows : follows per round)
-        "interleave_follows": 1,
+    "pacing": {
+        "action_delay_min": 60,
+        "action_delay_max": 200,
+        "long_break_every": 15,
+        "long_break_min": 300,
+        "long_break_max": 900,
+        "distraction_chance": 0.08,
+        "distraction_min": 60,
+        "distraction_max": 240,
+    },
+    "safety": {
+        "active_hours_enabled": False,   # off = run 24/7, stop only on daily caps
+        "active_hours_start": 8,
+        "active_hours_end": 24,
+        "soft_block_max_per_day": 2,
+        "rate_limit_max_hits": 3,
+        "rate_limit_cooldown_min": 900,
+        "rate_limit_cooldown_max": 1800,
+        "follow_fail_rest_threshold": 5,
+        "follow_fail_rest_min": 1200,
+        "follow_fail_rest_max": 2400,
+        "follow_rest_max_per_day": 3,
+    },
+    "targeting": {
+        "sources": {"profiles": [], "post_likers": [], "post_commenters": [], "hashtags": []},
+        "candidate_pool_min": 300,
+        "scrape_per_source_cap": 600,
+        "scrape_per_seed_cap": 150,
+        "max_same_seed_streak": 2,
+        "filters": {
+            "skip_already_follows_me": True,
+            "skip_private": False,
+            "skip_no_posts": True,
+            "min_followers": 0,
+            "max_followers": 5000,
+            "max_following": 0,
+        },
+        "discovery": {
+            "enabled": False,
+            "keywords": [],
+            "negative_keywords": [],
+            "min_followers": 5000,
+            "max_followers": 500000,
+        },
     },
     "engagement": {
-        # reach link pool: the scraper/burner fills data/reach_pool.json and the main
-        # account is consume-only (never loads gated hashtag grids). Merged into the
-        # existing engagement block - only the missing keys are added.
-        "reach_external_harvest": True,    # off = legacy in-loop harvest on the main account
-        "reach_max_same_tag_streak": 2,    # consume diversity: max likes in a row from one tag
-        "reach_scrape_per_tag": 60,        # burner: post links to grab per hashtag visit
+        "reach_enabled": True,
+        "reach_source": "hashtags",
+        "reach_view_story": True,
+        "reach_hashtags": [],
+        "reach_cadence_min": 1,
+        "reach_cadence_max": 4,
+        "reach_cadence_fallback": 5,
+        "reach_external_harvest": True,
+        "reach_max_same_tag_streak": 2,
+        "reach_scrape_per_tag": 60,
+        "reach_like_min_delay": 30,
+        "reach_like_max_delay": 90,
+        "reach_mode": "likes",
+        "reach_like_posts": 1,
+        "on_follow_view_story": True,
+        "on_follow_like_posts": 1,
+        "story_min_delay": 8,
+        "story_max_delay": 25,
+        "story_recheck_hours": 20,
+        "story_reach_background": False,
     },
-}
-
-DEFAULT_LOGS = {
-    "followed_log": "data/followed.log",
-    "follow_skipped_log": "data/follow_skipped.log",
-    "follow_failed_log": "data/follow_failed.log",
-    "churn_unfollowed_log": "data/churn_unfollowed.log",
-    "follow_kept_log": "data/follow_kept.log",
-    "reach_liked_log": "data/reach_liked.log",
-    "filter_checked_log": "data/filter_checked.log",
-    "filter_rejected_log": "data/filter_rejected.log",
-}
-
-DEFAULT_BEHAVIOR = {
-    "keep_running": False,      # follow/churn: sleep & retry on empty pool instead of stopping
-    "idle_recheck_min": 15,
-    "idle_recheck_max": 30,
-}
-
-DEFAULT_PACING = {
-    # per-calendar-day action safety (caps become true daily totals)
-    "daily_volume_jitter": 0.3,
-    "daily_action_cap": 0,          # combined follows+unfollows/day (0 = off)
-    "soft_block_max_per_day": 2,
-    # gated-follow rest: a run of follow failures = IG gating follows -> rest & resume
-    "follow_fail_rest_threshold": 5,      # rest after N follow failures in a row (0 = off)
-    "follow_fail_rest_min_seconds": 1200, # rest window low (20m)
-    "follow_fail_rest_max_seconds": 2400, # rest window high (40m)
-    "follow_rest_max_per_day": 3,         # hard-stop after this many rests/day
-    # active-hours (local tz) — OFF: run 24/7 and stop only on daily caps
-    "active_hours_enabled": False,
-    "active_hours_start": 8,
-    "active_hours_end": 24,
-}
-
-DEFAULT_SCRAPER = {
-    "enabled": False,
-    "coordinate_with_bot": True,   # only scrape during the bot's dead time
-    "pool_high_mult": 5,           # stop once ready FOLLOW pool >= this × follow.daily_cap
-    "reach_pool_high_mult": 5,     # stop once ready REACH pool >= this × story_reach_daily_cap
-    # Persistent-profile model (like the main bot): cdp_endpoint "" + user_data_dir,
-    # logged in once via scraper_login.py. Set cdp_endpoint to a :9223 URL to use CDP.
-    "cdp_endpoint": "",
-    "user_data_dir": "data/scraper-profile",
-    "idle_seconds": 600,
-    "min_delay": 1,
-    "max_delay": 3,
-    "long_break_every": 40,
-    "long_break_min": 60,
-    "long_break_max": 180,
-    "browser": {   # distinct fingerprint from the main account (anti-association)
-        "user_agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),
-        "viewport_width": 1440,
-        "viewport_height": 900,
-        "locale": "en-US",
-        "timezone_id": "",
-        "proxy": "",   # http://user:pass@host:port — route the burner via a different IP
+    "marketing": {
+        "unfollow_after_days": 2,
+        "keep_followers_back": False,
+        "also_trim_following": False,
+        "list_trim_cap": 40,
+        "ratio_unfollows": 5,
+        "ratio_follows": 4,
+    },
+    "scraper": {
+        "enabled": False,
+        "external": False,           # core bot consumes the scraper's pool
+        "keep_running": False,
+        "coordinate_with_bot": True,
+        "idle_recheck_min": 15,
+        "idle_recheck_max": 30,
+        "follow_pool_mult": 5,
+        "reach_pool_mult": 5,
+        "cdp_endpoint": "",
+        "user_data_dir": "data/scraper-profile",
+        "idle_seconds": 600,
+        "filter_delay_min": 1,
+        "filter_delay_max": 3,
+        "long_break_every": 40,
+        "long_break_min": 60,
+        "long_break_max": 180,
+        "browser": {
+            "user_agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),
+            "viewport_width": 1440,
+            "viewport_height": 900,
+            "locale": "en-US",
+            "timezone_id": "",
+            "proxy": "",
+        },
+    },
+    "behavior": {
+        "use_following_cache": True,
+        "skip_verified": False,
+        "warmup_browse_seconds": 20,
+        "daily_loop": False,
+        "daily_loop_hours": 24,
+        "unfollow_retries": 2,
+        "unfollow_retry_backoff_seconds": [3, 8],
+        "use_following_list_fallback": True,
+        "account_resync_every": 40,
+    },
+    "logging": {
+        "unfollowed_log": "data/unfollowed.log",
+        "failed_log": "data/failed.log",
+        "skipped_log": "data/skipped.log",
+        "followed_log": "data/followed.log",
+        "follow_skipped_log": "data/follow_skipped.log",
+        "follow_failed_log": "data/follow_failed.log",
+        "churn_unfollowed_log": "data/churn_unfollowed.log",
+        "follow_kept_log": "data/follow_kept.log",
+        "follow_outcomes_log": "data/follow_outcomes.log",
+        "reach_liked_log": "data/reach_liked.log",
+        "filter_checked_log": "data/filter_checked.log",
+        "filter_rejected_log": "data/filter_rejected.log",
     },
 }
 
@@ -123,33 +167,14 @@ def _deep_fill(dst: dict, defaults: dict) -> int:
 
 
 def main() -> int:
+    # load_config already migrates legacy → new schema in memory.
     cfg = bot.load_config()
-    added = 0
-
-    if "mode" not in cfg:
-        cfg["mode"] = "unfollow"   # safe default; switch to follow/churn in the dashboard
-        added += 1
-
-    cfg.setdefault("follow", {})
-    added += _deep_fill(cfg["follow"], DEFAULT_FOLLOW)
-
-    cfg.setdefault("logging", {})
-    added += _deep_fill(cfg["logging"], DEFAULT_LOGS)
-
-    cfg.setdefault("behavior", {})
-    added += _deep_fill(cfg["behavior"], DEFAULT_BEHAVIOR)
-
-    cfg.setdefault("pacing", {})
-    added += _deep_fill(cfg["pacing"], DEFAULT_PACING)
-
-    cfg.setdefault("scraper", {})
-    added += _deep_fill(cfg["scraper"], DEFAULT_SCRAPER)
-
-    if added:
-        bot.save_config(cfg)
-        print(f"Added {added} missing config key(s). mode = {cfg['mode']}")
-    else:
-        print("Config already up to date — nothing to add.")
+    added = _deep_fill(cfg, DEFAULTS)
+    # Always re-save: even with nothing added, this rewrites the FILE to the clean
+    # schema (the in-memory cfg is already migrated).
+    bot.save_config(cfg)
+    print(f"Config migrated to the clean schema; {added} default key(s) added. "
+          f"mode = {cfg.get('mode')}")
     return 0
 
 

@@ -467,11 +467,11 @@ async def get_follow_lists():
 
 @app.get("/api/sources")
 async def get_sources():
-    sources = (bot.load_config().get("follow", {}) or {}).get("sources", {}) or {}
+    sources = (bot.load_config().get("targeting", {}) or {}).get("sources", {}) or {}
     return {
-        "follower_profiles": sources.get("follower_profiles", []) or [],
-        "liker_posts": sources.get("liker_posts", []) or [],
-        "commenter_posts": sources.get("commenter_posts", []) or [],
+        "follower_profiles": sources.get("profiles", []) or [],
+        "liker_posts": sources.get("post_likers", []) or [],
+        "commenter_posts": sources.get("post_commenters", []) or [],
         "hashtags": sources.get("hashtags", []) or [],
     }
 
@@ -497,12 +497,12 @@ async def put_sources(payload: SourcesUpdate):
     cp = _dedup_clean(payload.commenter_posts)
     ht = [h.lstrip("#").lower() for h in _dedup_clean(payload.hashtags, strip_at=False)]
     cfg = bot.load_config()
-    cfg.setdefault("follow", {})
-    cfg["follow"].setdefault("sources", {})
-    cfg["follow"]["sources"]["follower_profiles"] = fp
-    cfg["follow"]["sources"]["liker_posts"] = lp
-    cfg["follow"]["sources"]["commenter_posts"] = cp
-    cfg["follow"]["sources"]["hashtags"] = ht
+    cfg.setdefault("targeting", {})
+    cfg["targeting"].setdefault("sources", {})
+    cfg["targeting"]["sources"]["profiles"] = fp
+    cfg["targeting"]["sources"]["post_likers"] = lp
+    cfg["targeting"]["sources"]["post_commenters"] = cp
+    cfg["targeting"]["sources"]["hashtags"] = ht
     bot.save_config(cfg)
     return {"ok": True, "follower_profiles": fp, "liker_posts": lp,
             "commenter_posts": cp, "hashtags": ht}
@@ -511,9 +511,9 @@ async def put_sources(payload: SourcesUpdate):
 @app.post("/api/scrape")
 async def scrape_now():
     """Kick off a one-shot source scrape in the background."""
-    sources = (bot.load_config().get("follow", {}) or {}).get("sources", {}) or {}
+    sources = (bot.load_config().get("targeting", {}) or {}).get("sources", {}) or {}
     if not any(sources.get(k) for k in
-               ("follower_profiles", "liker_posts", "commenter_posts", "hashtags")):
+               ("profiles", "post_likers", "post_commenters", "hashtags")):
         raise HTTPException(400, "No sources configured. Add follower profiles, post URLs, or hashtags first.")
     if not bot_instance.start_scrape():
         raise HTTPException(409, "Bot is busy (already running or scraping).")
@@ -525,8 +525,8 @@ async def get_discovered_sources():
     """Niche-influencer accounts the bot flagged for review (bio-keyword match).
     Already-added ones are filtered out."""
     current = {s.lstrip("@").lower() for s in
-               ((bot.load_config().get("follow", {}) or {}).get("sources", {}) or {})
-               .get("follower_profiles", []) or []}
+               ((bot.load_config().get("targeting", {}) or {}).get("sources", {}) or {})
+               .get("profiles", []) or []}
     rows = [r for r in bot.read_discovered_sources()
             if r["username"].lower() not in current]
     return {"rows": rows, "count": len(rows)}
@@ -534,17 +534,17 @@ async def get_discovered_sources():
 
 @app.post("/api/discovered-sources/add")
 async def add_discovered_source(payload: DiscoveredAction):
-    """Promote a discovered account into follow.sources.follower_profiles and drop
+    """Promote a discovered account into targeting.sources.profiles and drop
     it from the review queue."""
     u = payload.username.strip().lstrip("@").lower()
     if not u:
         raise HTTPException(400, "empty username")
     cfg = bot.load_config()
-    cfg.setdefault("follow", {}).setdefault("sources", {})
-    fp = cfg["follow"]["sources"].get("follower_profiles", []) or []
+    cfg.setdefault("targeting", {}).setdefault("sources", {})
+    fp = cfg["targeting"]["sources"].get("profiles", []) or []
     if u not in {s.lstrip("@").lower() for s in fp}:
         fp.append(u)
-        cfg["follow"]["sources"]["follower_profiles"] = fp
+        cfg["targeting"]["sources"]["profiles"] = fp
         bot.save_config(cfg)
     bot.write_discovered_sources(
         [r for r in bot.read_discovered_sources() if r["username"].lower() != u])
@@ -906,12 +906,12 @@ def _stop_scraper_proc() -> bool:
 
 
 def _maybe_autostart_scraper() -> None:
-    """Start the scraper alongside the bot when in follow/churn mode and enabled."""
+    """Start the scraper alongside the bot when in follow/marketing mode and enabled."""
     try:
         cfg = bot.load_config()
         mode = (cfg.get("mode") or "").lower()
         scr = cfg.get("scraper", {}) or {}
-        if scr.get("enabled") and mode in ("follow", "churn"):
+        if scr.get("enabled") and mode in ("follow", "marketing"):
             _start_scraper_proc()
     except Exception:
         pass
