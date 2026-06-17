@@ -413,9 +413,24 @@
     /* Display face (Space Grotesk) on the brand mark, headings and the big
        tabular numbers - carries the 'instrument' personality; UI text stays Inter. */
     .brand .name, .page-head h1, .stat .value, .countdown-box .cd-value,
-    .mini-stats .ms .v, .reach-stats .rs-n, .status-pill.big {
+    .mini-stats .ms .v, .reach-stats .rs-n, .status-pill.big, .ring-val b {
       font-family: var(--font-display); letter-spacing: -0.02em;
     }
+
+    /* ---------- Pace Today instrument (signature) ---------- */
+    .pace { display: flex; gap: 14px 30px; flex-wrap: wrap; justify-content: center; padding: 6px 0 2px; }
+    .ring { width: 120px; text-align: center; }
+    .ring-dial { position: relative; width: 104px; height: 104px; margin: 0 auto; }
+    .ring-dial svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+    .ring-dial circle { fill: none; stroke-width: 7; }
+    .ring-bg { stroke: var(--surface-3); }
+    .ring-fg { stroke: var(--accent); stroke-linecap: round; stroke-dasharray: 295.31; transition: stroke-dashoffset .6s cubic-bezier(.4,0,.2,1); }
+    .ring-dial.run .ring-fg { filter: drop-shadow(0 0 5px var(--accent-glow)); }
+    .ring-dial.full .ring-fg { stroke: var(--success); }
+    .ring-val { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.05; }
+    .ring-val b { font-size: 25px; }
+    .ring-val span { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 2px; }
+    .ring-lbl { margin-top: 9px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   </style>
 </head>
 <body x-data="app()" x-init="init()">
@@ -629,6 +644,36 @@
             <div class="hero-last" x-show="state.last_message">last: <b x-text="state.last_message"></b></div>
           </div>
 
+          <!-- PACE TODAY (signature) -->
+          <template x-if="config">
+            <div class="card">
+              <div class="card-title">Pace today <span class="pill">vs daily cap</span></div>
+              <div class="pace">
+                <div class="ring" x-show="isFollowMode()">
+                  <div class="ring-dial" :class="{ run: isRunning, full: paceFrac('follows') >= 1 }">
+                    <svg viewBox="0 0 104 104"><circle class="ring-bg" cx="52" cy="52" r="47"/><circle class="ring-fg" cx="52" cy="52" r="47" :stroke-dashoffset="paceOffset('follows')"/></svg>
+                    <div class="ring-val"><b x-text="state.day_follows || 0"></b><span x-text="'/ ' + dayCap('follows')"></span></div>
+                  </div>
+                  <div class="ring-lbl">follows</div>
+                </div>
+                <div class="ring" x-show="config.mode === 'unfollow' || config.mode === 'marketing'">
+                  <div class="ring-dial" :class="{ run: isRunning, full: paceFrac('unfollows') >= 1 }">
+                    <svg viewBox="0 0 104 104"><circle class="ring-bg" cx="52" cy="52" r="47"/><circle class="ring-fg" cx="52" cy="52" r="47" :stroke-dashoffset="paceOffset('unfollows')"/></svg>
+                    <div class="ring-val"><b x-text="state.day_unfollows || 0"></b><span x-text="'/ ' + dayCap('unfollows')"></span></div>
+                  </div>
+                  <div class="ring-lbl">unfollows</div>
+                </div>
+                <div class="ring" x-show="config.engagement && config.engagement.reach_enabled">
+                  <div class="ring-dial" :class="{ run: isRunning, full: paceFrac('likes') >= 1 }">
+                    <svg viewBox="0 0 104 104"><circle class="ring-bg" cx="52" cy="52" r="47"/><circle class="ring-fg" cx="52" cy="52" r="47" :stroke-dashoffset="paceOffset('likes')"/></svg>
+                    <div class="ring-val"><b x-text="state.day_likes || 0"></b><span x-text="'/ ' + dayCap('likes')"></span></div>
+                  </div>
+                  <div class="ring-lbl">likes</div>
+                </div>
+              </div>
+            </div>
+          </template>
+
           <!-- UNFOLLOW stats -->
           <div class="stat-grid" x-show="!isFollowMode()">
             <div class="stat accent">
@@ -652,10 +697,6 @@
             <div class="stat warn">
               <div class="label">Whitelisted</div>
               <div class="value warn" x-text="totals.whitelisted || 0"></div>
-            </div>
-            <div class="stat">
-              <div class="label">Daily cap</div>
-              <div class="value" x-text="state.daily_cap || '-'"></div>
             </div>
           </div>
 
@@ -684,10 +725,6 @@
               <div class="label">Unfollowed · session</div>
               <div class="value warn" x-text="(state.churn_unfollowed_count || 0) + (state.unfollowed_count || 0)"></div>
               <div class="sub" x-text="(followTotals.churn_unfollowed || 0) + ' churned all-time'"></div>
-            </div>
-            <div class="stat">
-              <div class="label">Daily cap</div>
-              <div class="value" x-text="state.daily_cap || '-'"></div>
             </div>
           </div>
 
@@ -2178,6 +2215,13 @@
           if (!L) return 0;
           return ({ follows: L.follows_per_day, unfollows: L.unfollows_per_day, likes: L.likes_per_day })[kind] || 0;
         },
+        // Pace ring: 0..1 fraction of today's cap used, and the SVG dash offset (r=47).
+        paceFrac(kind) {
+          const done = (this.state && this.state['day_' + kind]) || 0;
+          const cap = this.dayCap(kind) || 0;
+          return cap > 0 ? Math.min(1, done / cap) : 0;
+        },
+        paceOffset(kind) { return (295.31 * (1 - this.paceFrac(kind))).toFixed(1); },
 
         async changeMode() {
           // The sidebar shows every list in all modes now, so there's no tab to reset -
