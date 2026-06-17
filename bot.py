@@ -1603,8 +1603,11 @@ class Bot:
         # (so the backlog count climbs in real time), refresh the throttled status,
         # and tell the helper when to stop scrolling - "stop" once the pool hits
         # candidate_pool_min (so we don't scroll a seed to its 600 cap when only a few
-        # more were needed), "next" once this seed has handed over a full seed_chunk
-        # so we rotate to the next source and keep the backlog diverse.
+        # more were needed), "next" once this seed has handed over its fair per-round
+        # chunk so we rotate to the next source and keep the backlog diverse.
+        # chunk_box[0] is the per-round chunk; it's lowered below to a FAIR SHARE of
+        # the pool target so one big follower list can't fill the pool alone.
+        chunk_box = [seed_chunk if seed_chunk > 0 else 10**9]
         _last_status = [0.0]
         def _collector(label, desc):
             state = {"new": 0}
@@ -1616,7 +1619,7 @@ class Bot:
                     status_cb(f"scraping {desc}: backlog {pending_count()}")
                 if self._stop_event.is_set() or pending_count() >= pool_min:
                     return "stop"
-                if seed_chunk > 0 and state["new"] >= seed_chunk:
+                if state["new"] >= chunk_box[0]:
                     return "next"
                 return None
             return hook, state
@@ -1651,17 +1654,29 @@ class Bot:
                                          self._scrape_hashtag(page, t, per_cap, on_collect=hook)),
                               "exhausted": False})
 
-        # Round-robin across seeds: each visit pulls up to seed_chunk new names then
-        # rotates (so the backlog interleaves sources), stopping the instant the pool
-        # hits candidate_pool_min. A seed that handed over a full chunk MAY have more,
-        # so it's revisited next round (the helper re-scrolls, dedup skips what we
-        # already took); one that gave less is drained and marked exhausted. The
-        # _scrape_* helpers re-navigate on each visit, so this re-scrolls - acceptable
-        # since vetting the existing backlog first (see run_scraper) makes a fresh
-        # scrape the exception, and it stops the moment the pool is full.
+        # --- SOURCE DIVERSITY: balance the backlog across ALL sources ---
+        # The round-robin stops the instant the pool hits candidate_pool_min, so if it
+        # always led with the same big follower list it would fill the pool from one or
+        # two seeds (the observed bias). So: (1) shuffle the seed order each pass and
+        # rotate the lead each round so no fixed seed dominates, and (2) cap each seed's
+        # per-round chunk to a FAIR SHARE of the pool target (pool_min / #seeds), so
+        # every configured source contributes before the pool fills.
+        random.shuffle(tasks)
+        n_seeds = max(1, len(tasks))
+        fair = max(10, pool_min // n_seeds)
+        chunk_box[0] = min(chunk_box[0], fair)
+
+        # Round-robin across seeds: each visit pulls up to the fair chunk then rotates.
+        # A seed that handed a full chunk MAY have more, so it's revisited next round
+        # (the helper re-scrolls; dedup skips what we already took); one that gave less
+        # is drained and marked exhausted. The lead rotates each round so the seeds cut
+        # off when the pool fills get to lead next time - even coverage over refills.
+        rr = 0
         while not self._stop_event.is_set() and pending_count() < pool_min:
             progressed = False
-            for task in tasks:
+            order = tasks[rr % n_seeds:] + tasks[:rr % n_seeds]
+            rr += 1
+            for task in order:
                 if self._stop_event.is_set() or pending_count() >= pool_min:
                     break
                 if task["exhausted"]:
@@ -1679,8 +1694,8 @@ class Bot:
                     self.state.emit("log", {"level": "info",
                                             "msg": f"+{state['new']} from {task['desc']} "
                                                    f"(backlog {pending_count()})"})
-                if seed_chunk <= 0 or state["new"] < seed_chunk:
-                    task["exhausted"] = True   # drained this source
+                if state["new"] < chunk_box[0]:
+                    task["exhausted"] = True   # gave less than a fair chunk - drained
             if not progressed:
                 break
 
