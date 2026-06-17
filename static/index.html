@@ -1328,6 +1328,26 @@
               </div>
 
               <div class="card">
+                <div class="card-title">Daily caps &amp; safety</div>
+                <div class="switch-grid" style="margin-bottom:14px;">
+                  <div class="switch-cell">
+                    <span class="sc-label">Restrict to active hours (off = run 24/7, stop only on daily caps)</span>
+                    <label class="switch"><input type="checkbox" x-model="config.pacing.active_hours_enabled" /><span class="track"></span></label>
+                  </div>
+                </div>
+                <div class="form-grid">
+                  <div><label>Active hours start (0-24)</label><input type="number" x-model.number="config.pacing.active_hours_start" /></div>
+                  <div><label>Active hours end (0-24)</label><input type="number" x-model.number="config.pacing.active_hours_end" /></div>
+                  <div><label>Soft-blocks/day before stop</label><input type="number" x-model.number="config.pacing.soft_block_max_per_day" /></div>
+                  <div><label>Gated-follow rest after N fails (0=off)</label><input type="number" x-model.number="config.pacing.follow_fail_rest_threshold" /></div>
+                  <div><label>Rest window min (s)</label><input type="number" x-model.number="config.pacing.follow_fail_rest_min_seconds" /></div>
+                  <div><label>Rest window max (s)</label><input type="number" x-model.number="config.pacing.follow_fail_rest_max_seconds" /></div>
+                  <div><label>Rests/day before hard-stop</label><input type="number" x-model.number="config.pacing.follow_rest_max_per_day" /></div>
+                </div>
+                <p class="hint" style="margin-top:8px;">With <strong>active hours off</strong> the bot runs around the clock and stops only when the day's follow/unfollow/like caps are reached, then sleeps to the next day. <strong>Gated-follow rest</strong>: after this many follow failures in a row (across interleaved churn batches) the bot closes the browser, lets the scraper fill pools while Instagram cools down, then resumes - giving up for the day after the rest limit.</p>
+              </div>
+
+              <div class="card">
                 <div class="card-title">Browser</div>
                 <div class="switch-grid" style="margin-bottom:14px;">
                   <div class="switch-cell">
@@ -1458,7 +1478,8 @@
                       <div class="form-grid">
                         <div><label>Idle re-check min (min)</label><input type="number" x-model.number="config.behavior.idle_recheck_min" /></div>
                         <div><label>Idle re-check max (min)</label><input type="number" x-model.number="config.behavior.idle_recheck_max" /></div>
-                        <div><label>Pool high-water (× daily cap)</label><input type="number" x-model.number="config.scraper.pool_high_mult" /></div>
+                        <div><label>Follow pool high-water (× daily cap)</label><input type="number" x-model.number="config.scraper.pool_high_mult" /></div>
+                        <div><label>Reach pool high-water (× reach cap)</label><input type="number" x-model.number="config.scraper.reach_pool_high_mult" /></div>
                         <div><label>Scraper Chrome CDP endpoint</label><input type="text" x-model="config.scraper.cdp_endpoint" /></div>
                         <div><label>Scrape pass gap (sec)</label><input type="number" x-model.number="config.scraper.idle_seconds" /></div>
                         <div><label>Filter delay min (s)</label><input type="number" x-model.number="config.scraper.min_delay" /></div>
@@ -2162,6 +2183,10 @@
               this.discoveryKeywordsText = (f.discovery.keywords || []).join('\n');
               this.discoveryNegativeText = (f.discovery.negative_keywords || []).join('\n');
             }
+            // Seed new pacing/scraper keys so their inputs render on configs saved
+            // before these features (existing values always win - defaults match config.yaml).
+            this.config.pacing = Object.assign({ active_hours_enabled: false, active_hours_start: 8, active_hours_end: 24, soft_block_max_per_day: 2, follow_fail_rest_threshold: 5, follow_fail_rest_min_seconds: 1200, follow_fail_rest_max_seconds: 2400, follow_rest_max_per_day: 3 }, this.config.pacing || {});
+            if (this.config.scraper) this.config.scraper = Object.assign({ reach_pool_high_mult: 5 }, this.config.scraper);
             this.config.watchdog = Object.assign({ enabled: false, stuck_after_seconds: 600, min_restart_interval_seconds: 900 }, this.config.watchdog || {});
             this.watchdog = Object.assign({}, this.config.watchdog);
           } catch (e) { this.showToast(e.message, 'error'); }

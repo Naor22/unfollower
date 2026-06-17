@@ -72,8 +72,13 @@ DEFAULT_PACING = {
     "daily_volume_jitter": 0.3,
     "daily_action_cap": 0,          # combined follows+unfollows/day (0 = off)
     "soft_block_max_per_day": 2,
-    # active-hours (local tz) — only act during human hours
-    "active_hours_enabled": True,
+    # gated-follow rest: a run of follow failures = IG gating follows -> rest & resume
+    "follow_fail_rest_threshold": 5,      # rest after N follow failures in a row (0 = off)
+    "follow_fail_rest_min_seconds": 1200, # rest window low (20m)
+    "follow_fail_rest_max_seconds": 2400, # rest window high (40m)
+    "follow_rest_max_per_day": 3,         # hard-stop after this many rests/day
+    # active-hours (local tz) — OFF: run 24/7 and stop only on daily caps
+    "active_hours_enabled": False,
     "active_hours_start": 8,
     "active_hours_end": 24,
 }
@@ -81,7 +86,8 @@ DEFAULT_PACING = {
 DEFAULT_SCRAPER = {
     "enabled": False,
     "coordinate_with_bot": True,   # only scrape during the bot's dead time
-    "pool_high_mult": 5,           # stop once ready pool >= this × follow.daily_cap
+    "pool_high_mult": 5,           # stop once ready FOLLOW pool >= this × follow.daily_cap
+    "reach_pool_high_mult": 5,     # stop once ready REACH pool >= this × story_reach_daily_cap
     # Persistent-profile model (like the main bot): cdp_endpoint "" + user_data_dir,
     # logged in once via scraper_login.py. Set cdp_endpoint to a :9223 URL to use CDP.
     "cdp_endpoint": "",

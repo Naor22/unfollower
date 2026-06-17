@@ -625,6 +625,8 @@ class Bot:
         self._me = ""  # logged-in handle; set in _run, used by the modal fallback
         self._run_skip = set()  # accounts that hard-failed THIS run - skip so one
                                 # poison profile can't jam the queue every batch
+        self._follow_fail_streak = 0  # follow failures since the last success, counted
+                                      # ACROSS interleaved batches (drives the gated-rest)
         self._warmed = False    # one-time external-scraper pool warm-up gate
         self._actions_since_resync = 0  # drives periodic account-count re-sync
         self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
@@ -693,16 +695,19 @@ class Bot:
 
     # --- timing helpers ---
 
-    def _set_acting(self, acting: bool) -> None:
+    def _set_acting(self, acting: bool, running: bool = True) -> None:
         """Publish whether the main bot is actively working, so the separate scraper
         process can yield the Pi (only scrape during the bot's dead time). Refreshed
-        periodically while acting (see _interruptible_sleep) for crash detection."""
+        periodically while alive (see _interruptible_sleep) for crash detection.
+        `running` distinguishes a live-but-idle bot (between cycles / sleeping) from a
+        stopped one - when the bot is stopped the scraper builds pools to HIGH-water."""
         self._acting = acting
         self._acting_written = time.time()
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             tmp = BOT_RUNTIME.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps({"acting": acting, "ts": time.time()}), encoding="utf-8")
+            tmp.write_text(json.dumps({"acting": acting, "running": running, "ts": time.time()}),
+                           encoding="utf-8")
             os.replace(tmp, BOT_RUNTIME)
         except Exception:
             pass
@@ -716,15 +721,28 @@ class Bot:
             return False
         return bool(d.get("acting")) and (time.time() - float(d.get("ts", 0))) < 90
 
+    def _bot_is_running(self) -> bool:
+        """Used by the scraper process: is the main bot alive (working OR idle between
+        cycles), as opposed to stopped/crashed? A live bot refreshes bot_runtime.json
+        every ~30s even while idle, so a stale/absent file or running=False means the
+        bot is stopped → the scraper is free to build the pools all the way to
+        high-water (nothing will consume them today)."""
+        try:
+            d = json.loads(BOT_RUNTIME.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return bool(d.get("running", True)) and (time.time() - float(d.get("ts", 0))) < 120
+
     def _interruptible_sleep(self, seconds: float) -> None:
         end = time.monotonic() + seconds
         while True:
             self.state.touch()   # heartbeat: a sleeping bot is alive, a hung one isn't
-            # Keep the 'acting' signal fresh through long internal waits (jitter /
-            # long-breaks) so the scraper stays paused while the bot is mid-cycle.
-            if getattr(self, "_acting", False) and \
-                    time.time() - getattr(self, "_acting_written", 0) > 30:
-                self._set_acting(True)
+            # Keep the bot_runtime signal fresh through long internal waits (jitter /
+            # long-breaks / day-cap sleep). Refresh whether acting OR idle so the
+            # scraper can tell a live-but-idle bot (stay paused / two-stage fill) from a
+            # stopped one (build pools to high-water).
+            if time.time() - getattr(self, "_acting_written", 0) > 30:
+                self._set_acting(getattr(self, "_acting", False))
             if self._stop_event.is_set():
                 return
             if self._pause_event.is_set():
@@ -2661,15 +2679,19 @@ class Bot:
                     follow_ready = self._pool_ready(day_cfg)
                     reach_need = self._reach_harvest_on(day_cfg)
                     reach_low = self._reach_likes_left(day_cfg) if reach_need else 0
-                    reach_high = max(1, int(eng.get("story_reach_daily_cap", 100) or 100) * mult)
+                    reach_mult = int(scr.get("reach_pool_high_mult", mult) or mult)
+                    reach_high = max(1, int(eng.get("story_reach_daily_cap", 100) or 100) * reach_mult)
                     reach_ready = self._reach_pool_ready()
-                    # STAGE 2 gate - may this pool build past low-water? Only once the bot
-                    # is DONE for the day (the consumer has used up today's room): then the
-                    # scraper has nothing to wait for, so it builds the high-water buffer for
-                    # tomorrow. While the bot still has room we stop at low-water and let it
-                    # work the Pi instead of over-filling.
-                    follow_build_high = follow_need and self._day_room("follows", day_cfg) <= 0
-                    reach_build_high = reach_need and self._day_room("likes", day_cfg) <= 0
+                    # STAGE 2 gate - may this pool build past low-water? Build the
+                    # high-water buffer either when the bot is DONE for the day (used up
+                    # today's room) OR when the bot is STOPPED entirely (nothing will
+                    # consume the pools, so fill them up and then idle). While the bot is
+                    # alive WITH room left we stop at low-water and let it work the Pi.
+                    bot_running = self._bot_is_running()
+                    follow_build_high = follow_need and (
+                        not bot_running or self._day_room("follows", day_cfg) <= 0)
+                    reach_build_high = reach_need and (
+                        not bot_running or self._day_room("likes", day_cfg) <= 0)
                     # Balance the two pools: don't push either past low-water while the
                     # other is still below it (so a big follow backlog can't vet to 5x cap
                     # before reach gets a turn). target = high only when this pool may build
@@ -3381,7 +3403,7 @@ class Bot:
         if L.get("date") != today:
             L = {"date": today, "follows": 0, "unfollows": 0, "likes": 0,
                  "stories": 0, "soft_blocks": 0, "last_block_ts": 0,
-                 "caps": self._roll_daily_caps(cfg)}
+                 "follow_rests": 0, "caps": self._roll_daily_caps(cfg)}
             self._ledger = L
             self._save_ledger()
         else:
@@ -4197,9 +4219,11 @@ class Bot:
 
         Mirrors _process_day: re-reads the whitelist + done set fresh, paces only
         real follows, backs off on soft blocks, and aborts on a run of failures.
-        Returns 'cap' / 'exhausted' / 'stopped' / 'block'. max_actions caps the
-        accounts touched this call (for interleaving) - 'cap' when that batch
-        limit is hit (more may remain), 'exhausted' only when the pool is empty."""
+        Returns 'cap' / 'exhausted' / 'stopped' / 'block' / 'rest'. max_actions caps
+        the accounts touched this call (for interleaving) - 'cap' when that batch
+        limit is hit (more may remain), 'exhausted' only when the pool is empty.
+        'rest' = a sustained run of follow failures (IG gating) - the caller backs
+        off and resumes (the streak is tracked across batches, not just this call)."""
         follow_cfg = cfg.get("follow", {}) or {}
         pacing = cfg["pacing"]
         filters = follow_cfg.get("filters", {}) or {}
@@ -4314,6 +4338,7 @@ class Bot:
                 processed += 1
                 self._day_record("follows", cfg)
                 consecutive_errors = 0
+                self._follow_fail_streak = 0   # a real follow clears the gated-rest streak
                 self._adjust_following(+1)
                 self._tick_resync(page)
                 # Extra exposure touches while we're still on the profile.
@@ -4332,10 +4357,12 @@ class Bot:
                 self.state.emit("follow_skipped", {"timestamp": ts, "username": target, "reason": reason})
                 self.state.update(last_message=f"skipped @{target} ({reason})")
                 consecutive_errors = 0
+                self._follow_fail_streak = 0   # a clean skip means follows still work
             elif result.startswith("rate_limited"):
                 append_log(failed_log, f"{ts}\t{target}\t{result}")
                 new_failed = self.state.snapshot()["follow_failed_count"] + 1
                 consecutive_errors = 0
+                self._follow_fail_streak = 0   # handled by the soft-block cooldown below
                 self.state.update(follow_failed_count=new_failed,
                                   last_message=f"rate-limited @{target} (soft block)")
                 self.state.emit("follow_failed", {"timestamp": ts, "username": target, "reason": "rate_limited"})
@@ -4349,11 +4376,19 @@ class Bot:
                 self._run_skip.add(target)   # don't re-attempt this run (poison guard)
                 new_failed = self.state.snapshot()["follow_failed_count"] + 1
                 consecutive_errors += 1
+                # Streak persists ACROSS interleaved batches (unlike the per-call
+                # consecutive_errors), so a churn cycle that follows 4 at a time can't
+                # mask a sustained gating run. A run of failures = IG is gating follows;
+                # rest (close the browser, let the scraper work + IG cool down) instead
+                # of hammering. The caller turns this into a backed-off resume.
+                self._follow_fail_streak += 1
+                rest_at = int(pacing.get("follow_fail_rest_threshold", 5))
                 self.state.update(follow_failed_count=new_failed,
-                                  last_message=f"failed @{target}: {result}")
+                                  last_message=f"failed @{target}: {result} "
+                                               f"({self._follow_fail_streak}/{rest_at})")
                 self.state.emit("follow_failed", {"timestamp": ts, "username": target, "reason": result})
-                if consecutive_errors >= 5:
-                    return "block"
+                if rest_at > 0 and self._follow_fail_streak >= rest_at:
+                    return "rest"
 
             if self._stop_event.is_set():
                 return "stopped"
@@ -4391,7 +4426,7 @@ class Bot:
         interleave_unfollows : interleave_follows), so both progress together and
         the activity reads as steady mixed marketing. The story-reach layer keeps
         firing inside each batch (every action calls the reach tick), so reach runs
-        alongside automatically. Returns 'cap'/'exhausted'/'stopped'/'block'."""
+        alongside automatically. Returns 'cap'/'exhausted'/'stopped'/'block'/'rest'."""
         follow_cfg = cfg.get("follow", {}) or {}
         churn_cfg = follow_cfg.get("churn", {}) or {}
         unf_per = max(1, int(churn_cfg.get("interleave_unfollows", 2)))
@@ -4408,6 +4443,14 @@ class Bot:
         u_dead = False
         t_dead = not also_trim
         f_dead = False
+        # Ratio gate baseline: count REAL actions this cycle (state deltas), so follows
+        # can't outrun unfollows while unfollow supply remains. churn unfollows bump
+        # churn_unfollowed_count, list-trim bumps unfollowed_count, follows bump
+        # followed_count. When BOTH unfollow sources are exhausted we drop the gate and
+        # let follows run to the cap (keep-following-to-cap when there's nothing to churn).
+        base = self.state.snapshot()
+        base_f = base.get("followed_count", 0) or 0
+        base_u = (base.get("churn_unfollowed_count", 0) or 0) + (base.get("unfollowed_count", 0) or 0)
 
         while not self._stop_event.is_set():
             progressed = False
@@ -4428,14 +4471,30 @@ class Bot:
                 t_used += unf_per
                 t_dead = (out == "exhausted")
                 progressed = progressed or not t_dead
-            # --- follow batch ---
+            # --- follow batch (ratio-gated) ---
             if not f_dead and f_used < f_cap:
-                out = self._process_follow_day(page, cfg, max_actions=fol_per)
-                if out in ("stopped", "block", "checkpoint"):
-                    return out
-                f_used += fol_per
-                f_dead = (out == "exhausted")
-                progressed = progressed or not f_dead
+                # While any unfollow source still has accounts, hold follows to their
+                # ratio share of REAL unfollows so a refilled follow pool can't balloon
+                # the following count ahead of churn (the overnight follow-only drift).
+                # A small starter allowance (fol_per) lets the first follows run at u=0.
+                unfollow_supply = not (u_dead and t_dead)
+                snap = self.state.snapshot()
+                real_f = (snap.get("followed_count", 0) or 0) - base_f
+                real_u = ((snap.get("churn_unfollowed_count", 0) or 0)
+                          + (snap.get("unfollowed_count", 0) or 0)) - base_u
+                allowed_f = (real_u * fol_per) // unf_per + fol_per
+                if unfollow_supply and real_f >= allowed_f:
+                    self.state.update(phase_detail=(
+                        f"holding follows for {fol_per}:{unf_per} ratio "
+                        f"({real_f} follows : {real_u} unfollows this cycle)"))
+                    # don't touch f_used/progressed - let the next round catch unfollows up
+                else:
+                    out = self._process_follow_day(page, cfg, max_actions=fol_per)
+                    if out in ("stopped", "block", "checkpoint", "rest"):
+                        return out
+                    f_used += fol_per
+                    f_dead = (out == "exhausted")
+                    progressed = progressed or not f_dead
 
             u_busy = (not u_dead and u_used < u_cap)
             t_busy = (not t_dead and t_used < t_cap)
@@ -4748,6 +4807,9 @@ class Bot:
             password = os.getenv("IG_PASSWORD")
             self._me = (username or "").lstrip("@").lower()
             self._run_skip = set()   # fresh each run; poison accounts get another chance next run
+            self._follow_fail_streak = 0   # reset the gated-rest streak each run
+            self._set_acting(False, running=True)   # publish "alive, not yet acting" so a
+                                                     # restart isn't read as stopped by the scraper
             self._recent_follow_seeds.clear()  # fresh source-diversity window each run
             self._recent_reach_tags.clear()    # fresh reach tag-diversity window each run
             self._reach_consumed.clear()       # fresh reach pick-guard each run
@@ -5008,6 +5070,41 @@ class Bot:
                                   "start again later (after several hours).",
                         )
                         break
+                    if outcome == "rest":
+                        # A run of follow failures = IG is gating follows. Don't hammer:
+                        # close the browser (frees the Pi so the scraper fills pools) and
+                        # back off so IG cools down, then resume. After too many rests in
+                        # one day, give up - it's a hard block, not a transient gate.
+                        L = self._ensure_ledger(day_cfg)
+                        L["follow_rests"] = int(L.get("follow_rests", 0)) + 1
+                        self._save_ledger()
+                        rests = int(L["follow_rests"])
+                        max_rests = int(pacing.get("follow_rest_max_per_day", 3))
+                        append_event("follow_rest", f"#{rests} today")
+                        if max_rests > 0 and rests >= max_rests:
+                            self.state.update(
+                                status="error", current_target=None, next_action_at=None,
+                                error=f"Follows gated - rested {rests} time(s) today and "
+                                      "they're still failing. Stopped for the day. Lower the "
+                                      "follow cap and try again later (several hours).")
+                            self.state.emit("log", {"level": "error",
+                                "msg": f"follow gating persisted after {rests} rests - hard stop"})
+                            break
+                        lo = float(pacing.get("follow_fail_rest_min_seconds", 1200))
+                        hi = float(pacing.get("follow_fail_rest_max_seconds", 2400))
+                        rest_s = random.uniform(min(lo, hi), max(lo, hi))
+                        disconnect(); self._set_acting(False)
+                        self._follow_fail_streak = 0
+                        self.state.update(
+                            status="sleeping", current_target=None,
+                            phase_detail=(f"follows gated - resting ~{rest_s / 60:.0f}m "
+                                          f"(rest {rests}/{max_rests}; scraper filling pools)"),
+                            next_action_at=time.time() + rest_s)
+                        self.state.emit("log", {"level": "info",
+                            "msg": f"follows gated - rest #{rests} for ~{rest_s / 60:.0f}m"})
+                        self._interruptible_sleep(rest_s)
+                        self.state.update(next_action_at=None)
+                        continue
                     day_behavior = day_cfg.get("behavior", {}) or {}
                     keep_running = (bool(day_behavior.get("keep_running", False))
                                     and mode in ("follow", "churn"))
@@ -5064,7 +5161,7 @@ class Bot:
             self.state.update(status="error", error=str(e), next_action_at=None)
             append_event("error", str(e)[:200])
         finally:
-            self._set_acting(False)   # bot stopped → scraper free to run
+            self._set_acting(False, running=False)   # bot stopped → scraper builds to high-water
             try:
                 st = self.state.snapshot().get("status")
                 append_event("bot_stop", "stopped" if self._stop_event.is_set() else (st or ""))
