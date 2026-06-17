@@ -754,14 +754,15 @@ async def clear_activity():
 
 
 @app.post("/api/account/refresh")
-async def refresh_account():
+async def refresh_account(force: bool = False):
     """Refresh the account follower/following counts. While running, the bot
     already updates them, so this is a no-op then. While idle, it triggers a
-    one-shot live fetch (background) unless we fetched very recently."""
+    one-shot live fetch (background) unless we fetched very recently. `force=true`
+    (a manual click) skips the freshness throttle so the user can re-sync now."""
     if bot_instance.is_running:
         return {"ok": True, "running": True}
     ts = bot.read_account_stats().get("ts", 0)
-    if time.time() - ts < 300:
+    if not force and time.time() - ts < 300:
         return {"ok": True, "fresh": True}
     threading.Thread(target=bot_instance.fetch_account_now, daemon=True).start()
     return {"ok": True, "started": True}

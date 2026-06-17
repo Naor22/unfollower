@@ -246,6 +246,7 @@
     .countdown-box .cd-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
     .countdown-box .cd-value { font-size: 40px; font-weight: 700; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 1.1; margin-top: 2px; }
     .countdown-box .cd-value.idle { color: var(--muted-2); font-size: 26px; }
+    .countdown-box .cd-sub { font-size: 12px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
     .hero-prog .pl { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
     .hero-prog .pl b { color: var(--text); font-variant-numeric: tabular-nums; }
     .hero-bar { height: 9px; background: var(--surface-3); border-radius: 99px; overflow: hidden; }
@@ -559,7 +560,7 @@
           <span class="mode-tag" x-text="modeLabel(config.mode)"></span>
         </template>
         <template x-if="state.account_followers != null || state.account_following != null">
-          <div class="acct-bar">
+          <div class="acct-bar" @click="refreshAccountNow()" title="Click to re-sync from Instagram now" style="cursor:pointer">
             <span class="acct"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><b x-text="fmtNum(state.account_followers)"></b> followers</span>
             <span class="acct"><b x-text="fmtNum(state.account_following)"></b> following</span>
             <span class="acct" title="actions done today / per-day cap"><b x-text="(state.day_follows||0) + '/' + dayCap('follows')"></b> foll · <b x-text="(state.day_unfollows||0) + '/' + dayCap('unfollows')"></b> unf · <b x-text="(state.day_likes||0) + '/' + dayCap('likes')"></b> likes today</span>
@@ -573,7 +574,7 @@
           <div class="countdown">on <b x-text="'@' + state.current_target"></b></div>
         </template>
         <template x-if="state.next_action_at && nextActionSeconds() > 0">
-          <div class="countdown"><span x-text="countdownLabel().toLowerCase()"></span> <b x-text="(_tick, countdownText())"></b></div>
+          <div class="countdown" :title="resumeAt() ? 'resumes around ' + resumeAt() : ''"><span x-text="countdownLabel().toLowerCase()"></span> <b x-text="(_tick, countdownText())"></b></div>
         </template>
         <div class="mini-progress" x-show="state.total_targets > 0 && (!config || config.mode !== 'marketing')" :title="state.progress_index + ' / ' + state.total_targets">
           <div :style="'width:' + progressPercent() + '%'"></div>
@@ -641,6 +642,7 @@
               <div class="countdown-box">
                 <div class="cd-label" x-text="countdownLabel()"></div>
                 <div class="cd-value" :class="{ idle: !(_tick, countdownText()) }" x-text="(_tick, countdownText()) || (isRunning ? 'working…' : 'idle')"></div>
+                <div class="cd-sub" x-show="nextActionSeconds() > 600" x-text="'resumes ≈ ' + resumeAt()"></div>
               </div>
               <div class="hero-prog" x-show="state.current_target || (state.total_targets > 0 && (!config || config.mode !== 'marketing'))">
                 <!-- Linear progress only makes sense for a single flow (unfollow list /
@@ -1788,6 +1790,17 @@
           // scraper fills the pool in a separate process (no WS event). The sidebar now
           // shows both unfollow + follow counts in every mode, so poll both lists.
           setInterval(() => { this.refreshFollowLists(true); this.refreshLists(true); }, 10000);
+          // Keep the account follower/following bar live while idle - but ONLY while
+          // the dashboard tab is actually visible. Viewing your own profile is the
+          // safest IG action there is, yet a perfectly regular 24/7 beat is a needless
+          // behavioral fingerprint; gating on visibility makes it look like a human
+          // glancing at their profile while the tab is open, and stops entirely when
+          // it isn't. The server still throttles real fetches to one per ~5 min and is
+          // a no-op while running (the run updates the counts itself).
+          setInterval(() => {
+            if (document.visibilityState !== 'visible') return;
+            this.fetch('/api/account/refresh', { method: 'POST' }).catch(() => {});
+          }, 60000);
 
           try { await this.loadActivityFromServer(); } catch (e) {}
           this.connectWS();
@@ -2327,6 +2340,15 @@
           const net = p[p.length - 1] - p[0];
           return (net >= 0 ? '▲ +' : '▼ ') + net + ' since tracking';
         },
+        // Manual account re-sync (click the top-bar follower/following chip). Forces
+        // a live fetch past the 5-min throttle; counts arrive over the WS state push.
+        async refreshAccountNow() {
+          try {
+            const r = await this.fetch('/api/account/refresh?force=true', { method: 'POST' });
+            if (r.running) this.showToast('Counts update live while running', 'info');
+            else this.showToast('Re-syncing from Instagram…', 'success');
+          } catch (e) { this.showToast('Could not re-sync account', 'error'); }
+        },
         // Followed-list source filter: distinct seeds + the filtered (reversed) rows.
         followedSources() {
           const s = new Set();
@@ -2601,7 +2623,20 @@
         friendlyStatus() { return STATUS_TEXT[this.state.status] || this.state.status || 'idle'; },
 
         countdownLabel() {
+          // Long waits (daily cap reached, a follow-gate rest, outside active hours) are
+          // "next RUN" - even when the status currently reads 'scraping' because the
+          // burner is filling pools meanwhile. Short waits are the inter-action delay.
+          if (this.nextActionSeconds() > 600) return 'Next run in';
           return this.state.status === 'sleeping' ? 'Next run in' : 'Next action in';
+        },
+
+        // Wall-clock time the bot is scheduled to resume (e.g. "00:05"), so an overnight
+        // cap wait shows an actual time, not just a relative countdown. '' when no wait.
+        resumeAt() {
+          this._tick;
+          if (!this.state.next_action_at || this.nextActionSeconds() <= 0) return '';
+          return new Date(this.state.next_action_at * 1000)
+            .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         },
 
         // Live, formatted time until the next action/run. Returns '' when there's no

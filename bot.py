@@ -2568,7 +2568,9 @@ class Bot:
             page.goto(f"https://www.instagram.com/{self._me}/", wait_until="domcontentloaded")
             self._jitter(1.5, 3.0)
             counts = self._read_profile_counts(page)
-        except Exception:
+        except Exception as e:
+            self.state.emit("log", {"level": "warn",
+                "msg": f"account count refresh failed (could not open @{self._me}): {e}"})
             return
         fields = {}
         if counts.get("followers") is not None:
@@ -2585,6 +2587,12 @@ class Bot:
                     time.time() - getattr(self, "_last_history_write", 0) > 1800:
                 self._last_history_write = time.time()
                 append_log(ACCOUNT_HISTORY, f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{f}\t{g}")
+        else:
+            # Both parses returned nothing - the bar would silently freeze. Surface
+            # it so a DOM/locale/login problem on the Pi is visible, not invisible.
+            self.state.emit("log", {"level": "warn",
+                "msg": f"account count refresh: could not read follower/following from @{self._me} "
+                       "(not logged in, or Instagram changed the profile header)"})
         self._actions_since_resync = 0
 
     def fetch_account_now(self) -> bool:
@@ -2755,8 +2763,12 @@ class Bot:
             if remaining <= 0:
                 break
             if self._scraper_active():
-                self.state.update(status="scraping", current_target=None,
-                                  phase_detail="scraping — " + (self._scraper_phase() or "filling pools"))
+                # Keep the WHY visible even while the burner works, so a short re-check
+                # or an overnight cap wait never reads as a bare, unexplained countdown.
+                phase = "scraping — " + (self._scraper_phase() or "filling pools")
+                if sleeping_detail:
+                    phase += f" · {sleeping_detail}"
+                self.state.update(status="scraping", current_target=None, phase_detail=phase)
             else:
                 self.state.update(status="sleeping", current_target=None,
                                   phase_detail=sleeping_detail)
@@ -5448,9 +5460,11 @@ class Bot:
                     if self._day_capped_for_mode(day_cfg, mode):
                         disconnect(); self._set_acting(False)
                         gate_secs = self._seconds_until_tomorrow()
+                        resume_clk = time.strftime("%H:%M", time.localtime(time.time() + gate_secs))
                         self.state.update(next_action_at=time.time() + gate_secs)
                         self._sleep_reflecting_scraper(
-                            gate_secs, f"daily caps reached - resuming tomorrow (~{gate_secs / 3600:.1f}h)")
+                            gate_secs,
+                            f"daily caps reached - resuming ~{resume_clk} (in ~{gate_secs / 3600:.1f}h)")
                         self.state.update(next_action_at=None)
                         continue
 
@@ -5603,14 +5617,33 @@ class Bot:
                         break  # one-shot mode: a single batch then stop
 
                     if keep_running:
+                        # If THIS cycle just exhausted the daily cap(s), don't do a short
+                        # re-check - loop straight back so the cap gate at the top of the
+                        # loop sleeps us until tomorrow. The gate is only evaluated at the
+                        # top, so a cycle that hits the cap mid-way must yield here or it
+                        # would otherwise idle one pointless re-check interval first.
+                        if self._day_capped_for_mode(day_cfg, mode):
+                            continue
                         # Don't hard-stop when the pool is empty - sleep a short,
                         # randomized interval and re-check. A background scraper
                         # service refills the pool; churn-unfollows keep maturing.
                         lo = float(day_scraper.get("idle_recheck_min", 15))
                         hi = float(day_scraper.get("idle_recheck_max", 30))
                         sleep_s = random.uniform(min(lo, hi), max(lo, hi)) * 60
-                        note = ("pool empty - waiting for fresh candidates"
-                                if outcome == "exhausted" else "cycle done - re-checking")
+                        # Explain WHY we're re-checking rather than acting, so a short
+                        # countdown right after a cap is hit reads sensibly. In marketing
+                        # one cap can be reached while the other still has room (e.g.
+                        # follows done for the day, but unfollows mature over time).
+                        f_room = self._day_room("follows", day_cfg)
+                        u_room = self._day_room("unfollows", day_cfg)
+                        if mode == "marketing" and f_room <= 0 and u_room > 0:
+                            note = "follow cap reached for today - waiting for unfollows to become due"
+                        elif mode == "marketing" and u_room <= 0 and f_room > 0:
+                            note = "unfollow cap reached for today - following more as the pool refills"
+                        elif outcome == "exhausted":
+                            note = "pool empty - waiting for fresh candidates"
+                        else:
+                            note = "cycle done - re-checking"
                     else:
                         # Daily-loop: sleep ~loop_hours before the next batch.
                         sleep_s = loop_hours * 3600 * random.uniform(0.9, 1.1)

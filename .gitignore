@@ -6,6 +6,8 @@
 # Gitignored so `git reset --hard` on the Pi never touches them.
 data/
 data_pc/
+# Logs/counts pulled off the Pi for local debugging - never commit.
+data_pi/
 
 # --- Pi keeps its own tuned config / whitelist; edited live via the dashboard.
 #     Tracking these would let a `git reset --hard` deploy clobber them. ---
