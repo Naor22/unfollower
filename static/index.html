@@ -284,6 +284,11 @@
     .feed-row.is-phase .l1 { color: var(--muted); font-size: 13px; }
     .feed-main .l1 .u { font-family: var(--mono); color: var(--accent-2); }
     .feed-count { display: inline-block; margin-left: 7px; padding: 0 7px; border-radius: 99px; background: var(--surface-3); color: var(--muted); font-size: 10.5px; font-weight: 700; vertical-align: middle; }
+    /* intent chip: what the bot is TRYING to do mid-flow (before the outcome) */
+    .ibadge { display: inline-block; margin-right: 7px; padding: 1px 8px; border-radius: 99px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; vertical-align: middle; }
+    .ibadge.follow   { background: var(--success-bg); color: var(--success); }
+    .ibadge.unfollow { background: var(--danger-bg);  color: var(--danger); }
+    .ibadge.like     { background: var(--warning-bg); color: var(--warning); }
     .feed-main .l2 { font-size: 11.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .feed-main .l2-full { font-size: 11.5px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
     .feed-hist { margin-top: 6px; border-top: 1px solid var(--border-soft); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
@@ -774,7 +779,7 @@
                     </div>
                     <div class="feed-main">
                       <div class="l1">
-                        <span x-text="ev.last"></span><template x-if="ev.username"> <a class="u" :href="'https://www.instagram.com/'+ev.username+'/'" target="_blank" rel="noopener" @click.stop x-text="'@'+ev.username"></a></template><template x-if="ev.actions && ev.actions.length > 1"><span class="feed-count" x-text="ev.actions.length"></span></template>
+                        <template x-if="ev.lastKind === 'wait' && ev.intent"><span class="ibadge" :class="ev.intent" x-text="intentVerb(ev.intent)"></span></template><span x-text="ev.last"></span><template x-if="ev.username"> <a class="u" :href="'https://www.instagram.com/'+ev.username+'/'" target="_blank" rel="noopener" @click.stop x-text="'@'+ev.username"></a></template><template x-if="ev.actions && ev.actions.length > 1"><span class="feed-count" x-text="ev.actions.length"></span></template>
                       </div>
                       <div class="l2" x-show="!open && ev.detail" x-text="ev.detail"></div>
                       <div class="l2-full" x-show="open && ev.detail" x-cloak x-text="ev.detail"></div>
@@ -1969,6 +1974,7 @@
         },
 
         _nowTime() { return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); },
+        intentVerb(i) { return ({ follow: 'following', unfollow: 'unfollowing', like: 'liking' })[i] || i; },
 
         // Append an action. Account actions (with a username) are GROUPED into one
         // row per user (expand to see their full history); the row jumps to the top
@@ -1977,7 +1983,7 @@
         // Rows GROUP by `key` (defaults to the username - per-user for unfollow/
         // follow; per-POST for reach so each like is its own row). `uname` is just
         // the @handle shown. `time` is the server clock so devices match.
-        _addAction(uname, label, detail, tone, iconKey, time, key) {
+        _addAction(uname, label, detail, tone, iconKey, time, key, intent) {
           const gkey = key || uname;
           const action = { label, detail: detail || '', time: time || this._nowTime(), tone };
           const icon = ICONS[iconKey] || ICONS.skipped;
@@ -1989,6 +1995,8 @@
             g.actions.push(action);               // chronological: oldest → newest
             if (g.actions.length > 60) g.actions.shift();
             g.last = label; g.detail = detail || ''; g.tone = tone; g.icon = icon; g.time = action.time;
+            g.lastKind = iconKey;                 // 'wait' = mid-flow; drives the intent chip
+            if (intent) g.intent = intent;        // what the bot is TRYING to do
             this.activity.unshift(g);             // move the row to the top
           } else {
             this.activity.unshift({
@@ -2018,7 +2026,7 @@
           const u = (d.username || '').toLowerCase() || null;
           const m = {
             log:               () => this._addAction(null, d.msg, '', d.level === 'error' ? 'bad' : 'info', d.level === 'error' ? 'error' : 'info', t),
-            step:              () => this._addAction(u, d.label, '', d.tone || 'neutral', 'wait', t, d.key),
+            step:              () => this._addAction(u, d.label, '', d.tone || 'neutral', 'wait', t, d.key, d.intent),
             unfollowed:        () => this._addAction(u, 'Unfollowed', d.note || '', 'bad', 'unfollowed', t),
             failed:            () => this._addAction(u, 'Failed to unfollow', d.reason || '', 'bad', 'failed', t),
             skipped:           () => this._addAction(u, 'Skipped', d.reason || '', 'neutral', 'skipped', t),

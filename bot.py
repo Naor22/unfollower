@@ -800,6 +800,9 @@ class Bot:
                                 # poison profile can't jam the queue every batch
         self._follow_fail_streak = 0  # follow failures since the last success, counted
                                       # ACROSS interleaved batches (drives the gated-rest)
+        self._intent = ""       # current action intent ("follow"/"unfollow"/"like"),
+                                # set at each flow's entry so every _step shows what
+                                # the bot is TRYING to do, not just the final outcome
         self._warmed = False    # one-time external-scraper pool warm-up gate
         self._actions_since_resync = 0  # drives periodic account-count re-sync
         self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
@@ -1887,7 +1890,8 @@ class Bot:
         by `key` (defaults to username - per-user for unfollow/follow; per-POST for
         reach, where one user can be liked across many separate posts)."""
         self.state.update(phase_detail=f"@{username or 'post'}: {label}")
-        payload = {"username": username, "label": label, "tone": tone}
+        payload = {"username": username, "label": label, "tone": tone,
+                   "intent": self._intent}
         if key:
             payload["key"] = key
         self.state.emit("step", payload)
@@ -1896,6 +1900,7 @@ class Bot:
         """Coordinator: run the profile-page unfollow (header -> post menu), and on
         a transient failure fall back to the own-Following-list modal, then retry
         the whole thing a few times. Terminal outcomes short-circuit immediately."""
+        self._intent = "unfollow"
         behavior = load_config().get("behavior", {})
         retries = int(behavior.get("unfollow_retries", 2))
         lo, hi = (behavior.get("unfollow_retry_backoff_seconds") or [3, 8])[:2]
@@ -3218,6 +3223,7 @@ class Bot:
         lean=True (external-scraper mode): the scraper already vetted this account,
         so skip the redundant filter reads (private / counts / discovery) - just
         confirm we're not already following, then follow cleanly."""
+        self._intent = "follow"
         filters = filters or {}
         self._step(target, "opening profile")
         page.goto(f"https://www.instagram.com/{target}/", wait_until="domcontentloaded")
@@ -3729,6 +3735,7 @@ class Bot:
         Likes work on any PUBLIC account (high hit rate); stories need an active,
         viewable story (rare). Logs + feeds only on a real action. Returns
         'liked' / 'viewed' / 'ratelimit' / '' (nothing) so the caller can pace."""
+        self._intent = "like"
         eng = load_config().get("engagement", {}) or {}
         mode = (eng.get("reach_mode") or "likes").lower()
         self.state.update(phase_detail=f"reach: checking @{u}")
@@ -4000,6 +4007,7 @@ class Bot:
         Emits a per-poster STEP for each stage (like the unfollow flow) so the feed
         shows the full flow under one expandable row. Returns
         'liked' / 'viewed' / 'ratelimit' / ''."""
+        self._intent = "like"
         tag = getattr(self, "_reach_tag", "")
         # Per-POST grouping key, so each like is its OWN expandable row (one user can
         # be liked across many posts; we don't want them merged like the user-keyed
@@ -4391,38 +4399,30 @@ class Bot:
 
     @staticmethod
     def _pick_diverse_candidate(eligible: list[dict], recent_seeds, max_streak: int) -> dict:
-        """Choose the next account to follow so consecutive follows SPREAD across
-        distinct seeds instead of draining one seed/source before the next.
+        """Pick the next account to follow with maximum source spread (anti-bias).
 
-        `eligible` is the current pending list; `recent_seeds` is a sequence of the
-        last few seeds we picked (most recent last). We group candidates by their
-        full `source` label (the seed, e.g. 'followers:alice' / 'hashtag:norwood'),
-        pick the highest-priority seed-group (by _source_rank, the existing intent
-        weighting) whose seed is NOT over-represented in the recent window, and
-        return its first member. _source_rank stays a TIE-BREAK so high-intent
-        sources still lead — diversity just prevents long same-seed runs.
+        Instead of walking a fixed priority order (which always led with the same
+        seed and biased follows toward one source), we pick a SEED at random and then
+        a random member of that seed. Choosing the seed first - then a member - gives
+        every source EQUAL odds regardless of how many candidates it contributed, so a
+        big follower list can't dominate. The recent-seed window still blocks a seed
+        that's appeared `max_streak` times in a row so runs stay mixed.
 
-        max_streak: avoid picking a seed that already appears this many times (or
-        more) in `recent_seeds` while another seed is available. <=0 disables
-        diversity (falls back to pure priority order)."""
+        `eligible` is the pending list; `recent_seeds` is the last few seeds picked
+        (most recent last). max_streak<=0 disables the streak guard (pure random)."""
         if not eligible:
             return None
-        # Order candidates by intent priority, stable on pool order (so within a
-        # seed we still follow the earliest-queued first).
-        ordered = sorted(eligible, key=lambda c: Bot._source_rank(c.get("source", "")))
-        if max_streak <= 0:
-            return ordered[0]
-        recent = list(recent_seeds)
-        # First choice: the top-priority candidate whose seed isn't saturated in
-        # the recent window. This walks priority order, so a higher-intent seed is
-        # preferred over a lower-intent one as long as it's not over-streaked.
-        for c in ordered:
-            seed = c.get("source", "")
-            if recent[-max_streak:].count(seed) < max_streak:
-                return c
-        # Every available seed is saturated (e.g. only one seed left, or the window
-        # is full of each) — fall back to the highest-priority candidate.
-        return ordered[0]
+        groups = {}
+        for c in eligible:
+            groups.setdefault(c.get("source", ""), []).append(c)
+        seeds = list(groups.keys())
+        if max_streak > 0 and len(seeds) > 1:
+            recent = list(recent_seeds)[-max_streak:]
+            avail = [s for s in seeds if recent.count(s) < max_streak]
+            if avail:
+                seeds = avail
+        seed = random.choice(seeds)              # equal odds per source - kills the bias
+        return random.choice(groups[seed])       # random member within the chosen seed
 
     def _process_follow_day(self, page, cfg, max_actions=None) -> str:
         """Run one daily batch of follows pulled from the candidate pool.
@@ -4514,11 +4514,9 @@ class Bot:
                     )
                 return "exhausted"
 
-            # Pick for SOURCE DIVERSITY: spread consecutive follows across distinct
-            # seeds so we never drain one target's followers / one hashtag before
-            # the next. _source_rank still orders intent (commenters/hashtags >
-            # likers > followers) as the tie-break, so high-intent sources lead
-            # without being followed in one long same-seed run.
+            # Pick for SOURCE DIVERSITY: random seed, then random member of it, so
+            # follows spread evenly across all sources (equal odds per seed) instead
+            # of draining one target's followers - the anti-bias picker.
             cand = self._pick_diverse_candidate(
                 eligible, self._recent_follow_seeds, max_same_seed)
             target = cand["username"]
@@ -4789,6 +4787,7 @@ class Bot:
         consecutive_errors = 0
         rate_limit_hits = 0
         for u in due:
+            self._intent = "unfollow"   # churn review → unfollow; tags the review steps
             if self._stop_event.is_set():
                 return "stopped"
             if processed >= daily_unfollow_cap:
