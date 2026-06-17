@@ -533,6 +533,11 @@
 
         <div class="nav-group">
           <div class="heading">Settings</div>
+          <button class="nav-item" x-show="isFollowMode()" x-cloak :class="{ active: tab==='scraper' }" @click="go('scraper')">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            <span>Scraper</span>
+            <span class="count" x-show="scraper && scraper.running" :style="'background:var(--success-bg);color:var(--success)'">on</span>
+          </button>
           <button class="nav-item" :class="{ active: tab==='system' }" @click="go('system')">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
             <span>System</span>
@@ -1216,6 +1221,56 @@
           </div>
         </div>
 
+        <!-- ============ SCRAPER ============ -->
+        <div x-show="tab==='scraper'" x-transition.opacity>
+          <div class="page-head"><h1>Scraper</h1><p>The burner-account service that fills the follow + reach pools. Live while this tab is open.</p></div>
+
+          <div class="card">
+            <div class="card-title">Scraper service <span class="pill">separate process · burner account</span>
+              <div style="flex:1"></div>
+              <span class="pill" x-show="scraper" :style="scraper && scraper.running ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--danger-bg);color:var(--danger)'" x-text="scraper ? (scraper.running ? 'running' : 'down') : ''"></span>
+            </div>
+            <p class="hint" style="margin-bottom:12px;">Scrapes + filters follow candidates AND harvests reach post-links on a 2nd Chrome (burner account), publishing cleaned pools for the bot. Browser-only, isolated from your main account. Runs only in the bot's dead time and fills both pools to their high-water marks; the main account stays consume-only.</p>
+            <div class="btn-row" style="margin-bottom:14px;">
+              <button class="primary" @click="scraperControl('start')" :disabled="scraperBusy || (scraper && scraper.running)">Start scraper</button>
+              <button class="ghost" @click="scraperControl('stop')" :disabled="scraperBusy || !(scraper && scraper.running)">Stop scraper</button>
+            </div>
+            <template x-if="scraper && scraper.present">
+              <div>
+                <div class="reach-stats" style="grid-template-columns:repeat(4,1fr);">
+                  <div><div class="rs-n" x-text="scraper.backlog || 0"></div><div class="rs-l">backlog</div></div>
+                  <div><div class="rs-n" x-text="scraper.ready || 0"></div><div class="rs-l">follow pool</div></div>
+                  <div><div class="rs-n" x-text="scraper.reach_ready || 0"></div><div class="rs-l">reach pool</div></div>
+                  <div><div class="rs-n" x-text="scraper.rejected || 0"></div><div class="rs-l">rejected</div></div>
+                </div>
+                <p class="hint" style="margin-top:8px;font-size:11px;"><strong>backlog</strong> = scraped, waiting to be vetted · <strong>follow pool</strong> = vetted &amp; eligible (what the bot follows) · <strong>reach pool</strong> = harvested post links to like · <strong>rejected</strong> = filtered out</p>
+                <p class="hint" style="margin-top:10px;">
+                  <span x-show="scraper.phase" x-text="scraper.phase"></span><span x-show="scraper.age != null"> · updated <span x-text="scraper.age"></span>s ago</span>
+                  <span x-show="scraper.error" style="color:var(--warning);"><br>⚠ <span x-text="scraper.error"></span></span>
+                </p>
+              </div>
+            </template>
+            <template x-if="scraper && !scraper.present">
+              <p class="hint" style="color:var(--muted);">No scraper status yet - the <code>unfollower-scraper</code> service hasn't reported. See DEPLOY.md to set up the 2nd Chrome + burner account.</p>
+            </template>
+          </div>
+
+          <div class="card" style="margin-top:18px;">
+            <div class="card-title">Pools <span class="pill">click a count to browse</span></div>
+            <p class="hint" style="margin-bottom:12px;">Browse what's queued, or wipe a cached pool to rebuild it from scratch - e.g. after changing your sources or switching reach mode. The scraper refills them on its next pass; your permanent logs (followed / unfollowed / churned) are untouched.</p>
+            <div class="btn-row" style="margin-bottom:12px;">
+              <button class="ghost" @click="openPool('follow')">View follow pool</button>
+              <button class="ghost" @click="openPool('reach')">View reach pool</button>
+            </div>
+            <div class="btn-row">
+              <button class="ghost" @click="clearPool('reach_pool')" :disabled="clearBusy">Clear reach pool</button>
+              <button class="ghost" @click="clearPool('reach_todo')" :disabled="clearBusy">Clear reach backlog</button>
+              <button class="ghost" @click="clearPool('follow_candidates')" :disabled="clearBusy">Clear candidate pool</button>
+              <button class="ghost" @click="clearPool('scraper_todo')" :disabled="clearBusy">Clear scrape backlog</button>
+            </div>
+          </div>
+        </div>
+
         <!-- ============ SYSTEM ============ -->
         <div x-show="tab==='system'" x-transition.opacity>
           <div class="page-head"><h1>System</h1><p>Raspberry Pi health and the bot watchdog. Live while this tab is open.</p></div>
@@ -1285,47 +1340,6 @@
             <div class="card-title">Service <span class="pill">Pi systemd</span></div>
             <p class="hint" style="margin-bottom:12px;">Restart the bot + dashboard. It goes down for a few seconds, then comes back.</p>
             <button class="ghost" @click="restartService()" title="Restart the unfollower systemd service on the Pi">Restart service</button>
-          </div>
-
-          <div class="card" style="margin-top:18px;">
-            <div class="card-title">Scraper service <span class="pill">separate process · burner account</span>
-              <div style="flex:1"></div>
-              <span class="pill" x-show="scraper" :style="scraper && scraper.running ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--danger-bg);color:var(--danger)'" x-text="scraper ? (scraper.running ? 'running' : 'down') : ''"></span>
-            </div>
-            <p class="hint" style="margin-bottom:12px;">Scrapes + filters follow candidates AND harvests reach post-links on a 2nd Chrome (burner account), publishing cleaned pools for the bot. Browser-only, isolated from your main account. Runs only in the bot's dead time and fills both pools to their high-water marks; the main account stays consume-only.</p>
-            <div class="btn-row" style="margin-bottom:14px;">
-              <button class="primary" @click="scraperControl('start')" :disabled="scraperBusy || (scraper && scraper.running)">Start scraper</button>
-              <button class="ghost" @click="scraperControl('stop')" :disabled="scraperBusy || !(scraper && scraper.running)">Stop scraper</button>
-            </div>
-            <template x-if="scraper && scraper.present">
-              <div>
-                <div class="reach-stats" style="grid-template-columns:repeat(4,1fr);">
-                  <div><div class="rs-n" x-text="scraper.backlog || 0"></div><div class="rs-l">backlog</div></div>
-                  <div><div class="rs-n" x-text="scraper.ready || 0"></div><div class="rs-l">follow pool</div></div>
-                  <div><div class="rs-n" x-text="scraper.reach_ready || 0"></div><div class="rs-l">reach pool</div></div>
-                  <div><div class="rs-n" x-text="scraper.rejected || 0"></div><div class="rs-l">rejected</div></div>
-                </div>
-                <p class="hint" style="margin-top:8px;font-size:11px;"><strong>backlog</strong> = scraped, waiting to be vetted · <strong>follow pool</strong> = vetted &amp; eligible (what the bot follows) · <strong>reach pool</strong> = harvested post links to like · <strong>rejected</strong> = filtered out</p>
-                <p class="hint" style="margin-top:10px;">
-                  <span x-show="scraper.phase" x-text="scraper.phase"></span><span x-show="scraper.age != null"> · updated <span x-text="scraper.age"></span>s ago</span>
-                  <span x-show="scraper.error" style="color:var(--warning);"><br>⚠ <span x-text="scraper.error"></span></span>
-                </p>
-              </div>
-            </template>
-            <template x-if="scraper && !scraper.present">
-              <p class="hint" style="color:var(--muted);">No scraper status yet - the <code>unfollower-scraper</code> service hasn't reported. See DEPLOY.md to set up the 2nd Chrome + burner account.</p>
-            </template>
-          </div>
-
-          <div class="card" style="margin-top:18px;">
-            <div class="card-title">Clear pools <span class="pill">rebuilt by the scraper</span></div>
-            <p class="hint" style="margin-bottom:12px;">Wipe a cached pool to rebuild it from scratch - e.g. after changing your sources or switching reach mode. The scraper refills them on its next pass; your permanent logs (followed / unfollowed / churned) are untouched.</p>
-            <div class="btn-row">
-              <button class="ghost" @click="clearPool('reach_pool')" :disabled="clearBusy">Clear reach pool</button>
-              <button class="ghost" @click="clearPool('reach_todo')" :disabled="clearBusy">Clear reach backlog</button>
-              <button class="ghost" @click="clearPool('follow_candidates')" :disabled="clearBusy">Clear candidate pool</button>
-              <button class="ghost" @click="clearPool('scraper_todo')" :disabled="clearBusy">Clear scrape backlog</button>
-            </div>
           </div>
 
           <div class="card" style="margin-top:18px;">
@@ -1617,7 +1631,7 @@
                     <div><label>Long break min (s)</label><input type="number" x-model.number="config.scraper.long_break_min" /></div>
                     <div><label>Long break max (s)</label><input type="number" x-model.number="config.scraper.long_break_max" /></div>
                   </div>
-                  <p class="hint" style="margin-top:8px;">Runs as a separate service on a 2nd Chrome (burner). It fills the pools during the bot's dead-time and stops once each pool reaches its high-water. Live status under System &rarr; Scraper service.</p>
+                  <p class="hint" style="margin-top:8px;">Runs as a separate service on a 2nd Chrome (burner). It fills the pools during the bot's dead-time and stops once each pool reaches its high-water. Live status + controls on the <strong>Scraper</strong> tab.</p>
                   <p class="hint" style="margin-top:6px;">Vetting speed = <b>filter delay</b> between profiles + a <b>long break</b> every N. The burner only <i>views</i> profiles (no follows), so these can be brisker than the bot's pacing. Faster, still safe: filter delay ~0.5&ndash;1.2s, long break every ~80 for 30&ndash;90s.</p>
                 </div>
               </div>
@@ -1826,6 +1840,7 @@
         tempHist: [],
         watchdog: { enabled: false, stuck_after_seconds: 600, min_restart_interval_seconds: 900 },
         _sysTimer: null,
+        _scrTimer: null,
         deployFiles: [], deployRestart: true, deployBusy: false, deployResult: null,
         fsaSupported: (typeof window !== 'undefined' && 'showDirectoryPicker' in window),
         deployOrigin: (typeof window !== 'undefined' ? window.location.origin : ''),
@@ -1859,7 +1874,7 @@
           // Keep totals (incl. "Pending to follow") live even when the bot is OFF - the
           // scraper fills the pool in a separate process (no WS event). The sidebar now
           // shows both unfollow + follow counts in every mode, so poll both lists.
-          setInterval(() => { this.refreshFollowLists(true); this.refreshLists(true); }, 10000);
+          setInterval(() => { this.refreshFollowLists(true); this.refreshLists(true); this.loadScraper(); }, 10000);
           // Keep the account follower/following bar live while idle - but ONLY while
           // the dashboard tab is actually visible. Viewing your own profile is the
           // safest IG action there is, yet a perfectly regular 24/7 beat is a needless
@@ -1884,6 +1899,7 @@
             this.loadConfig(),
             this.loadWhitelist(),
             this.loadCredentials(),
+            this.loadScraper(),
             this.loadDiscovered(),
             this.loadAccountHistory(),
           ]);
@@ -1900,14 +1916,24 @@
           this.tab = tab; this.sidebarOpen = false;
           if (tab === 'discovered') this.loadDiscovered();
           if (tab === 'analytics') this.loadAnalytics();
-          if (tab === 'system') { this.startSysPolling(); this.loadScraper(); if (!this.deployGit) this.loadDeployStatus(); } else this.stopSysPolling();
+          if (tab === 'system') { this.startSysPolling(); if (!this.deployGit) this.loadDeployStatus(); } else this.stopSysPolling();
+          if (tab === 'scraper') this.startScraperPolling(); else this.stopScraperPolling();
         },
 
         startSysPolling() {
           this.loadSystem();
-          this.loadScraper();
           if (this._sysTimer) clearInterval(this._sysTimer);
-          this._sysTimer = setInterval(() => { this.loadSystem(); this.loadScraper(); }, 3000);
+          this._sysTimer = setInterval(() => this.loadSystem(), 3000);
+        },
+
+        startScraperPolling() {
+          this.loadScraper();
+          if (this._scrTimer) clearInterval(this._scrTimer);
+          this._scrTimer = setInterval(() => this.loadScraper(), 3000);
+        },
+
+        stopScraperPolling() {
+          if (this._scrTimer) { clearInterval(this._scrTimer); this._scrTimer = null; }
         },
 
         async loadScraper() {
