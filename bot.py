@@ -37,6 +37,7 @@ REACH_POOL = DATA_DIR / "reach_pool.json"                # harvested post links 
 DISCOVERED_SOURCES = DATA_DIR / "discovered_sources.json"
 ACCOUNT_STATS = DATA_DIR / "account_stats.json"
 SCRAPER_STATUS = DATA_DIR / "scraper_status.json"   # separate scraper service heartbeat/counts
+SCRAPER_ACTIVITY = DATA_DIR / "scraper_activity.json"  # scraper's recent log lines (live feed)
 SCRAPER_PID = DATA_DIR / "scraper.pid"              # so the server can track/stop the scraper
 DAILY_COUNTS = DATA_DIR / "daily_counts.json"       # real per-CALENDAR-DAY action ledger (ban safety)
 BOT_RUNTIME = DATA_DIR / "bot_runtime.json"         # bot "acting" signal so the scraper yields the Pi
@@ -97,7 +98,8 @@ class StateManager:
     receive messages via asyncio queues attached to the FastAPI event loop.
     """
 
-    def __init__(self, persist_events: bool = True, log_stdout: bool = False) -> None:
+    def __init__(self, persist_events: bool = True, log_stdout: bool = False,
+                 event_log_path: "Optional[Path]" = None) -> None:
         self._lock = threading.Lock()
         self._state = BotState()
         self._subscribers: list = []
@@ -111,6 +113,10 @@ class StateManager:
         # log_stdout=True mirrors emitted 'log' events to stdout, so the foreground
         # run and `journalctl -u unfollower-scraper` actually show progress.
         self._log_stdout = log_stdout
+        # Optional SEPARATE ring file for this process's own log lines (the scraper uses
+        # it so the dashboard can show a live scraper feed without the scraper writing the
+        # shared activity.json). Written on every 'log' emit, capped small.
+        self._event_log_path = event_log_path
         # Liveness marker for the watchdog. Bumped on every state update/emit AND
         # on every interruptible-sleep tick, so legitimate long sleeps (cooldowns,
         # daily loop) keep it fresh while a genuine hang (e.g. a frozen Playwright
@@ -158,7 +164,23 @@ class StateManager:
         if self._log_stdout and event_type == "log":
             lvl = (payload.get("level") or "info").upper()
             print(f"[{payload.get('_time')}] {lvl}: {payload.get('msg', '')}", flush=True)
+        # Mirror this process's log lines to its own ring file (scraper → live feed),
+        # promptly so the dashboard tracks progress in near-real-time.
+        if self._event_log_path is not None and event_type == "log":
+            self._save_event_ring()
         self._broadcast(msg)
+
+    def _save_event_ring(self) -> None:
+        """Persist the last ~80 log lines to the dedicated ring file (atomic). Used by
+        the scraper process so the server can surface a live scraper log feed."""
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            logs = [e for e in self._events if e.get("type") == "log"][-80:]
+            tmp = self._event_log_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(logs), encoding="utf-8")
+            os.replace(tmp, self._event_log_path)
+        except Exception:
+            pass
 
     # ---- shared activity feed (disk-backed, capped) ----
 
@@ -649,6 +671,18 @@ def write_reach_pool(entries: list[dict]) -> None:
     """Atomically replace the reach link pool. The SCRAPER is the only writer (the
     bot dedups via reach_liked.log instead of rewriting), so there's no write race."""
     _write_candidates_atomic(REACH_POOL, entries)
+
+
+def read_scraper_activity() -> list[dict]:
+    """The scraper service's recent log lines (live feed for the dashboard). Written
+    by the scraper's StateManager ring; empty if it hasn't reported yet."""
+    if not SCRAPER_ACTIVITY.exists():
+        return []
+    try:
+        data = json.loads(SCRAPER_ACTIVITY.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 def read_scraper_todo() -> list[dict]:

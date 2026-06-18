@@ -827,17 +827,35 @@ async def get_system():
     return s
 
 
+def _profile_rows(entries):
+    """username + source rows linking to the profile (backlogs & follow pool)."""
+    return [{"username": e["username"], "source": e.get("source", "") or "—",
+             "link": f"https://www.instagram.com/{e['username']}/"} for e in entries]
+
+
 @app.get("/api/pool/{kind}")
 async def get_pool(kind: str):
-    """Browseable pool contents for the dashboard's click-to-view list. `follow`
-    returns vetted candidates (each links to the profile); `reach` returns harvested
-    post links (each links to the post that'll be liked). Both carry the scrape
-    source so the list can show where each entry came from."""
+    """Browseable contents for the dashboard's click-to-view list. Each row carries
+    its scrape source (or, for `rejected`, the reason) and a link:
+      follow         - vetted candidates the bot follows (→ profile)
+      reach          - harvested posts to like (→ the post)
+      follow_backlog - raw scraped accounts awaiting vetting (→ profile)
+      reach_backlog  - raw reach prospects awaiting vetting (→ profile)
+      rejected       - accounts the vetting filtered out, with the reason (→ profile)"""
     if kind == "follow":
-        rows = [{"username": e["username"], "source": e.get("source", "") or "—",
-                 "link": f"https://www.instagram.com/{e['username']}/"}
-                for e in bot.read_follow_candidates()]
-        return {"kind": "follow", "count": len(rows), "rows": rows}
+        rows = _profile_rows(bot.read_follow_candidates())
+        return {"kind": kind, "count": len(rows), "rows": rows}
+    if kind == "follow_backlog":
+        rows = _profile_rows(bot.read_scraper_todo())
+        return {"kind": kind, "count": len(rows), "rows": rows}
+    if kind == "reach_backlog":
+        rows = _profile_rows(bot.read_reach_todo())
+        return {"kind": kind, "count": len(rows), "rows": rows}
+    if kind == "rejected":
+        rows = [{"username": r["username"], "source": r.get("reason", "") or "—",
+                 "link": f"https://www.instagram.com/{r['username']}/"}
+                for r in reversed(bot.read_filter_rejected_log())]   # newest first
+        return {"kind": kind, "count": len(rows), "rows": rows}
     if kind == "reach":
         rows = []
         for e in bot.read_reach_pool():
@@ -847,7 +865,7 @@ async def get_pool(kind: str):
                 "source": e.get("source") or e.get("tag", "") or "—",
                 "link": e.get("url") or (f"https://www.instagram.com/{u}/" if u else ""),
             })
-        return {"kind": "reach", "count": len(rows), "rows": rows}
+        return {"kind": kind, "count": len(rows), "rows": rows}
     return {"kind": kind, "count": 0, "rows": []}
 
 
@@ -1018,10 +1036,38 @@ def _maybe_autostart_scraper() -> None:
         pass
 
 
+_scraper_counts_cache = {"ts": 0.0, "data": {}}
+
+
+def _live_scraper_counts() -> dict:
+    """Pool sizes read straight from the on-disk pools (NOT the scraper's status
+    snapshot), so they stay current even while the scraper is idle and the bot is
+    consuming. TTL-cached (~2.5s) so rapid dashboard polling can't hammer the Pi -
+    the done-set read (followed/churn/following logs) is the only non-trivial part."""
+    now = time.time()
+    if now - _scraper_counts_cache["ts"] < 2.5:
+        return _scraper_counts_cache["data"]
+    d = {}
+    try:
+        d = {
+            "follow_backlog": len(bot.read_scraper_todo()),
+            "follow_pool": bot_instance._pool_ready({}),
+            "reach_backlog": len(bot.read_reach_todo()),
+            "reach_pool": bot_instance._reach_pool_ready(),
+            "rejected": len(bot.read_filter_rejected_log()),
+            "checked": len(bot.read_filter_checked_log()),
+        }
+    except Exception:
+        pass
+    _scraper_counts_cache.update(ts=now, data=d)
+    return d
+
+
 @app.get("/api/scraper")
 async def scraper_status():
     """Status of the scraper service. `running` comes from the PID file's process
-    liveness (authoritative); the status file adds counts + last-update age."""
+    liveness (authoritative); pool counts are read live from disk; the status file
+    adds the current phase + last-update age."""
     import json as _json
     running = bot.scraper_running()
     path = bot.SCRAPER_STATUS
@@ -1039,7 +1085,21 @@ async def scraper_status():
     # phase). It's False while the scraper is up but idle/paused (e.g. the bot is acting),
     # so the UI can show "idle" rather than "on". Same logic the bot uses internally.
     data["active"] = bool(running) and bot_instance._scraper_active()
+    # Live pool counts (always current). Keep legacy keys in sync for any old reader.
+    counts = _live_scraper_counts()
+    data.update(counts)
+    if "follow_backlog" in counts:
+        data["backlog"] = counts["follow_backlog"]
+        data["ready"] = counts["follow_pool"]
+        data["reach_ready"] = counts["reach_pool"]
     return data
+
+
+@app.get("/api/scraper/log")
+async def scraper_log():
+    """Recent scraper log lines for the live feed (newest last). Written by the
+    scraper process to its own ring file, so it works cross-process."""
+    return {"events": bot.read_scraper_activity()}
 
 
 @app.post("/api/scraper/start")

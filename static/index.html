@@ -393,6 +393,45 @@
     .pool-head p { color: var(--muted); font-size: 12px; margin: 2px 0 0; }
     .pool-head .count-chip { margin-left: auto; flex: none; }
 
+    /* ---------- scraper page ---------- */
+    .scr-head .scr-status { display: flex; align-items: center; gap: 12px; }
+    .scr-dot { width: 11px; height: 11px; border-radius: 50%; flex: none; background: var(--muted-2); }
+    .scr-dot.on { background: var(--success); box-shadow: 0 0 0 0 rgba(52,211,153,0.55); animation: scrpulse 1.6s infinite; }
+    .scr-dot.idle { background: var(--warning); }
+    .scr-dot.down { background: var(--danger); }
+    @keyframes scrpulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.5); } 70% { box-shadow: 0 0 0 8px rgba(52,211,153,0); } 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); } }
+    .scr-state { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 15px; }
+    .scr-phase { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; margin-top: 1px; }
+    .scr-meta { text-align: right; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .scr-meta .sm { padding: 5px 12px; font-size: 12px; }
+
+    .pipe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+    .pipe { display: flex; align-items: stretch; gap: 10px; margin-top: 4px; }
+    .pipe-stage { flex: 1; background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px 10px; text-align: center; cursor: pointer; transition: border-color .15s, transform .1s; }
+    .pipe-stage:hover { border-color: var(--accent); }
+    .pipe-stage:active { transform: scale(0.98); }
+    .pipe-stage.accent { border-color: rgba(45,212,191,0.35); background: rgba(45,212,191,0.07); }
+    .pipe-stage .ps-n { font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+    .pipe-stage.accent .ps-n { color: var(--accent-2); }
+    .pipe-stage .ps-l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 6px; }
+    .pipe-arrow { display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted-2); gap: 4px; }
+    .pipe-arrow svg { width: 22px; height: 22px; }
+    .pipe-arrow .pa-cap { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; }
+    .pipe-sub { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .chip-stat { background: var(--surface-3); border: 1px solid var(--border); border-radius: 99px; padding: 4px 11px; font-size: 12px; color: var(--muted); cursor: pointer; }
+    .chip-stat b { color: var(--text); font-variant-numeric: tabular-nums; }
+    .chip-stat:hover { border-color: var(--accent); }
+    .chip-stat.ghost-chip { cursor: default; } .chip-stat.ghost-chip:hover { border-color: var(--border); }
+
+    .scr-log { max-height: 320px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+    .scr-log-row { display: flex; gap: 10px; padding: 3px 6px; border-radius: 5px; line-height: 1.4; }
+    .scr-log-row:hover { background: var(--surface-2); }
+    .scr-log-row .slt { color: var(--muted-2); flex: none; font-variant-numeric: tabular-nums; }
+    .scr-log-row .slm { color: var(--text-soft, var(--muted)); word-break: break-word; }
+    .scr-log-row.error .slm { color: var(--danger); }
+    .scr-log-row.warn .slm { color: var(--warning); }
+    @media (max-width: 760px) { .pipe-grid { grid-template-columns: 1fr; } }
+
     /* ---------- mobile ---------- */
     @media (max-width: 860px) {
       .app { grid-template-columns: 1fr; }
@@ -1225,48 +1264,93 @@
         <div x-show="tab==='scraper'" x-transition.opacity>
           <div class="page-head"><h1>Scraper</h1><p>The burner-account service that fills the follow + reach pools. Live while this tab is open.</p></div>
 
-          <div class="card">
-            <div class="card-title">Scraper service <span class="pill">separate process · burner account</span>
-              <div style="flex:1"></div>
-              <span class="pill" x-show="scraper" :style="!(scraper && scraper.running) ? 'background:var(--danger-bg);color:var(--danger)' : (scraper.active ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--warning-bg);color:var(--warning)')" x-text="scraper ? (!scraper.running ? 'down' : (scraper.active ? 'scraping' : 'idle')) : ''"></span>
-            </div>
-            <p class="hint" style="margin-bottom:12px;">Scrapes + filters follow candidates AND harvests reach post-links on a 2nd Chrome (burner account), publishing cleaned pools for the bot. Browser-only, isolated from your main account. Runs only in the bot's dead time and fills both pools to their high-water marks; the main account stays consume-only.</p>
-            <div class="btn-row" style="margin-bottom:14px;">
-              <button class="primary" @click="scraperControl('start')" :disabled="scraperBusy || (scraper && scraper.running)">Start scraper</button>
-              <button class="ghost" @click="scraperControl('stop')" :disabled="scraperBusy || !(scraper && scraper.running)">Stop scraper</button>
-            </div>
-            <template x-if="scraper && scraper.present">
+          <!-- status header -->
+          <div class="card scr-head">
+            <div class="scr-status">
+              <span class="scr-dot" :class="scraperStateClass()"></span>
               <div>
-                <div class="reach-stats" style="grid-template-columns:repeat(4,1fr);">
-                  <div><div class="rs-n" x-text="scraper.backlog || 0"></div><div class="rs-l">backlog</div></div>
-                  <div><div class="rs-n" x-text="scraper.ready || 0"></div><div class="rs-l">follow pool</div></div>
-                  <div><div class="rs-n" x-text="scraper.reach_ready || 0"></div><div class="rs-l">reach pool</div></div>
-                  <div><div class="rs-n" x-text="scraper.rejected || 0"></div><div class="rs-l">rejected</div></div>
-                </div>
-                <p class="hint" style="margin-top:8px;font-size:11px;"><strong>backlog</strong> = scraped, waiting to be vetted · <strong>follow pool</strong> = vetted &amp; eligible (what the bot follows) · <strong>reach pool</strong> = harvested post links to like · <strong>rejected</strong> = filtered out</p>
-                <p class="hint" style="margin-top:10px;">
-                  <span x-show="scraper.phase" x-text="scraper.phase"></span><span x-show="scraper.age != null"> · updated <span x-text="scraper.age"></span>s ago</span>
-                  <span x-show="scraper.error" style="color:var(--warning);"><br>⚠ <span x-text="scraper.error"></span></span>
-                </p>
+                <div class="scr-state" x-text="scraperStateLabel()"></div>
+                <div class="scr-phase" x-text="(scraper && scraper.running) ? (scraper.phase || 'idle') : 'service not running'"></div>
               </div>
-            </template>
-            <template x-if="scraper && !scraper.present">
-              <p class="hint" style="color:var(--muted);">No scraper status yet - the <code>unfollower-scraper</code> service hasn't reported. See DEPLOY.md to set up the 2nd Chrome + burner account.</p>
-            </template>
+              <div style="flex:1"></div>
+              <div class="scr-meta">
+                <span x-show="scraper && scraper.age != null" x-text="'updated ' + fmtAgo(scraper && scraper.age)"></span>
+                <div class="btn-row" style="margin-top:8px;justify-content:flex-end;">
+                  <button class="primary sm" @click="scraperControl('start')" :disabled="scraperBusy || (scraper && scraper.running)">Start</button>
+                  <button class="ghost sm" @click="scraperControl('stop')" :disabled="scraperBusy || !(scraper && scraper.running)">Stop</button>
+                </div>
+              </div>
+            </div>
+            <p class="hint" x-show="scraper && scraper.error" style="color:var(--warning);margin-top:12px;">⚠ <span x-text="scraper.error"></span></p>
+            <p class="hint" x-show="scraper && !scraper.present && !(scraper && scraper.running)" style="color:var(--muted);margin-top:12px;">No scraper status yet — the <code>unfollower-scraper</code> service hasn't reported. See DEPLOY.md to set up the 2nd Chrome + burner account.</p>
           </div>
 
-          <div class="card" style="margin-top:18px;">
-            <div class="card-title">Pools <span class="pill">click a count to browse</span></div>
-            <p class="hint" style="margin-bottom:12px;">Browse what's queued, or wipe a cached pool to rebuild it from scratch - e.g. after changing your sources or switching reach mode. The scraper refills them on its next pass; your permanent logs (followed / unfollowed / churned) are untouched.</p>
-            <div class="btn-row" style="margin-bottom:12px;">
-              <button class="ghost" @click="openPool('follow')">View follow pool</button>
-              <button class="ghost" @click="openPool('reach')">View reach pool</button>
+          <!-- two pipelines -->
+          <div class="pipe-grid">
+            <div class="card">
+              <div class="card-title">Follow pipeline</div>
+              <div class="pipe">
+                <button class="pipe-stage" @click="openPool('follow_backlog')" title="Browse the scrape backlog">
+                  <div class="ps-n" x-text="fmtNum(dispScraper.follow_backlog)"></div>
+                  <div class="ps-l">backlog</div>
+                </button>
+                <div class="pipe-arrow"><span class="pa-cap">vetting</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="14 6 20 12 14 18"/></svg></div>
+                <button class="pipe-stage accent" @click="openPool('follow')" title="Browse the follow pool">
+                  <div class="ps-n" x-text="fmtNum(dispScraper.follow_pool)"></div>
+                  <div class="ps-l">follow pool</div>
+                </button>
+              </div>
+              <div class="pipe-sub">
+                <button class="chip-stat" @click="openPool('rejected')" title="Browse rejected accounts"><b x-text="fmtNum(dispScraper.rejected)"></b> rejected</button>
+                <span class="chip-stat ghost-chip"><b x-text="fmtNum(dispScraper.checked)"></b> vetted-kept</span>
+              </div>
             </div>
+            <div class="card">
+              <div class="card-title">Reach pipeline</div>
+              <div class="pipe">
+                <button class="pipe-stage" @click="openPool('reach_backlog')" title="Browse the reach backlog">
+                  <div class="ps-n" x-text="fmtNum(dispScraper.reach_backlog)"></div>
+                  <div class="ps-l">backlog</div>
+                </button>
+                <div class="pipe-arrow"><span class="pa-cap">vet + link</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="14 6 20 12 14 18"/></svg></div>
+                <button class="pipe-stage accent" @click="openPool('reach')" title="Browse the reach pool">
+                  <div class="ps-n" x-text="fmtNum(dispScraper.reach_pool)"></div>
+                  <div class="ps-l">reach pool</div>
+                </button>
+              </div>
+              <div class="pipe-sub">
+                <span class="chip-stat ghost-chip" x-text="reachModeNote()"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- live activity feed -->
+          <div class="card" style="margin-top:18px;">
+            <div class="card-title">Live activity
+              <span class="pill" x-show="scraper && scraper.active" style="background:var(--success-bg);color:var(--success)">live</span>
+              <div style="flex:1"></div>
+              <span class="count-chip" x-show="scraperLog.length" x-text="scraperLog.length + ' lines'"></span>
+            </div>
+            <template x-if="!scraperLog.length"><div class="empty"><div class="t">No scraper activity yet</div><div>Lines stream here as the burner scrapes &amp; vets.</div></div></template>
+            <div class="scr-log" x-show="scraperLog.length">
+              <template x-for="ev in scraperLogView()" :key="ev.k">
+                <div class="scr-log-row" :class="ev.level">
+                  <span class="slt" x-text="ev.time"></span>
+                  <span class="slm" x-text="ev.msg"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- manage pools -->
+          <div class="card" style="margin-top:18px;">
+            <div class="card-title">Manage pools</div>
+            <p class="hint" style="margin-bottom:12px;">Tap any count above to browse its contents. Wipe a cached pool to rebuild it from scratch — e.g. after changing sources or switching reach mode. The scraper refills on its next pass; your permanent logs are untouched.</p>
             <div class="btn-row">
-              <button class="ghost" @click="clearPool('reach_pool')" :disabled="clearBusy">Clear reach pool</button>
-              <button class="ghost" @click="clearPool('reach_todo')" :disabled="clearBusy">Clear reach backlog</button>
-              <button class="ghost" @click="clearPool('follow_candidates')" :disabled="clearBusy">Clear candidate pool</button>
               <button class="ghost" @click="clearPool('scraper_todo')" :disabled="clearBusy">Clear scrape backlog</button>
+              <button class="ghost" @click="clearPool('follow_candidates')" :disabled="clearBusy">Clear follow pool</button>
+              <button class="ghost" @click="clearPool('reach_todo')" :disabled="clearBusy">Clear reach backlog</button>
+              <button class="ghost" @click="clearPool('reach_pool')" :disabled="clearBusy">Clear reach pool</button>
             </div>
           </div>
         </div>
@@ -1704,10 +1788,10 @@
       <div class="pool-modal" @click.stop>
         <div class="pool-head">
           <div>
-            <h3 x-text="poolModal.kind === 'reach' ? 'Reach pool' : 'Follow pool'"></h3>
-            <p x-text="poolModal.kind === 'reach' ? 'Harvested posts to like — each links to the post' : 'Vetted, eligible accounts — each links to the profile'"></p>
+            <h3 x-text="poolMeta()[0]"></h3>
+            <p x-text="poolMeta()[1]"></p>
           </div>
-          <span class="count-chip" x-text="poolModal.loading ? '…' : (poolModal.count + ' in pool')"></span>
+          <span class="count-chip" x-text="poolModal.loading ? '…' : (poolModal.count + ' total')"></span>
           <button class="ghost icon" @click="poolModal=null" title="Close" aria-label="Close">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
@@ -1835,6 +1919,8 @@
         clearBusy: false,
         poolModal: null,
         poolFilter: '',
+        scraperLog: [],
+        dispScraper: { follow_backlog: 0, follow_pool: 0, reach_backlog: 0, reach_pool: 0, rejected: 0, checked: 0 },
         cpuHist: [],
         memHist: [],
         tempHist: [],
@@ -1927,9 +2013,10 @@
         },
 
         startScraperPolling() {
-          this.loadScraper();
+          this.loadScraper(); this.loadScraperLog();
           if (this._scrTimer) clearInterval(this._scrTimer);
-          this._scrTimer = setInterval(() => this.loadScraper(), 3000);
+          // Fast poll for a live feel; the server TTL-caches the heavier counts.
+          this._scrTimer = setInterval(() => { this.loadScraper(); this.loadScraperLog(); }, 1500);
         },
 
         stopScraperPolling() {
@@ -1937,7 +2024,67 @@
         },
 
         async loadScraper() {
-          try { this.scraper = await this.fetch('/api/scraper'); } catch (e) {}
+          try { this.scraper = await this.fetch('/api/scraper'); this._tweenScraper(); } catch (e) {}
+        },
+        async loadScraperLog() {
+          try { const j = await this.fetch('/api/scraper/log'); this.scraperLog = j.events || []; } catch (e) {}
+        },
+        // Animate the pool numbers toward their new values so updates feel smooth.
+        _tweenScraper() {
+          if (!this.scraper) return;
+          ['follow_backlog', 'follow_pool', 'reach_backlog', 'reach_pool', 'rejected', 'checked'].forEach(k => {
+            const target = this.scraper[k] != null ? this.scraper[k] : (this.dispScraper[k] || 0);
+            this._tweenNum(this.dispScraper, k, target);
+          });
+        },
+        _tweenNum(obj, key, target) {
+          const start = obj[key] || 0;
+          if (start === target) { obj[key] = target; return; }
+          const dur = 450, t0 = performance.now();
+          const tick = (now) => {
+            const p = Math.min(1, (now - t0) / dur);
+            const e = 1 - Math.pow(1 - p, 3);   // easeOutCubic
+            obj[key] = Math.round(start + (target - start) * e);
+            if (p < 1) requestAnimationFrame(tick); else obj[key] = target;
+          };
+          requestAnimationFrame(tick);
+        },
+        scraperStateClass() {
+          if (!this.scraper || !this.scraper.running) return 'down';
+          return this.scraper.active ? 'on' : 'idle';
+        },
+        scraperStateLabel() {
+          if (!this.scraper || !this.scraper.running) return 'Service down';
+          return this.scraper.active ? 'Scraping' : 'Idle';
+        },
+        fmtAgo(s) {
+          if (s == null) return '';
+          s = Math.max(0, Math.round(s));
+          if (s < 60) return s + 's ago';
+          if (s < 3600) return Math.floor(s / 60) + 'm ago';
+          return Math.floor(s / 3600) + 'h ago';
+        },
+        reachModeNote() {
+          const src = (this.config && this.config.engagement && this.config.engagement.reach_source) || 'hashtags';
+          if (src === 'prospects') return 'prospects · backlog → vetted posts';
+          if (src === 'pool') return 'legacy candidate-pool mode';
+          return 'hashtags · harvested directly (no backlog)';
+        },
+        scraperLogView() {
+          return (this.scraperLog || []).slice().reverse().slice(0, 80).map((e, i) => {
+            const d = e.data || {};
+            return { k: (d._time || '') + '·' + i, time: d._time || '', msg: d.msg || '', level: d.level || 'info' };
+          });
+        },
+        poolMeta() {
+          const m = {
+            follow: ['Follow pool', 'Vetted, eligible accounts — each links to the profile'],
+            reach: ['Reach pool', 'Harvested posts to like — each links to the post'],
+            follow_backlog: ['Scrape backlog', 'Raw scraped accounts awaiting vetting'],
+            reach_backlog: ['Reach backlog', 'Raw reach prospects awaiting vetting'],
+            rejected: ['Rejected', 'Accounts the vetting filtered out — reason shown as the tag'],
+          };
+          return m[this.poolModal ? this.poolModal.kind : 'follow'] || ['Pool', ''];
         },
 
         async scraperControl(action) {
@@ -1952,7 +2099,7 @@
 
         async clearPool(target) {
           const names = { reach_pool: 'reach pool', reach_todo: 'reach backlog',
-                          follow_candidates: 'candidate pool', scraper_todo: 'scrape backlog' };
+                          follow_candidates: 'follow pool', scraper_todo: 'scrape backlog' };
           if (!confirm('Clear the ' + (names[target] || target) + '? It rebuilds as the scraper runs.')) return;
           this.clearBusy = true;
           try {
