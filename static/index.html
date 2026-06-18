@@ -536,7 +536,7 @@
           <button class="nav-item" x-show="isFollowMode()" x-cloak :class="{ active: tab==='scraper' }" @click="go('scraper')">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
             <span>Scraper</span>
-            <span class="count" x-show="scraper && scraper.running" :style="'background:var(--success-bg);color:var(--success)'">on</span>
+            <span class="count" x-show="scraper && scraper.running" :style="scraper.active ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--warning-bg);color:var(--warning)'" x-text="scraper.active ? 'on' : 'idle'"></span>
           </button>
           <button class="nav-item" :class="{ active: tab==='system' }" @click="go('system')">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
@@ -1228,7 +1228,7 @@
           <div class="card">
             <div class="card-title">Scraper service <span class="pill">separate process · burner account</span>
               <div style="flex:1"></div>
-              <span class="pill" x-show="scraper" :style="scraper && scraper.running ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--danger-bg);color:var(--danger)'" x-text="scraper ? (scraper.running ? 'running' : 'down') : ''"></span>
+              <span class="pill" x-show="scraper" :style="!(scraper && scraper.running) ? 'background:var(--danger-bg);color:var(--danger)' : (scraper.active ? 'background:var(--success-bg);color:var(--success)' : 'background:var(--warning-bg);color:var(--warning)')" x-text="scraper ? (!scraper.running ? 'down' : (scraper.active ? 'scraping' : 'idle')) : ''"></span>
             </div>
             <p class="hint" style="margin-bottom:12px;">Scrapes + filters follow candidates AND harvests reach post-links on a 2nd Chrome (burner account), publishing cleaned pools for the bot. Browser-only, isolated from your main account. Runs only in the bot's dead time and fills both pools to their high-water marks; the main account stays consume-only.</p>
             <div class="btn-row" style="margin-bottom:14px;">

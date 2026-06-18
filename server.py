@@ -1035,6 +1035,10 @@ async def scraper_status():
         ts = float(data.get("ts", 0) or 0)
         data["age"] = int(time.time() - ts) if ts else None
         data["running"] = running   # PID liveness is authoritative (covers all launchers)
+    # `active` = process alive AND actually scraping/vetting right now (fresh non-idle
+    # phase). It's False while the scraper is up but idle/paused (e.g. the bot is acting),
+    # so the UI can show "idle" rather than "on". Same logic the bot uses internally.
+    data["active"] = bool(running) and bot_instance._scraper_active()
     return data
 
 
