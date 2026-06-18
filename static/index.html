@@ -406,7 +406,11 @@
     .scr-meta .sm { padding: 5px 12px; font-size: 12px; }
 
     .pipe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+    .pipe-card { transition: border-color .2s, box-shadow .2s; }
+    .pipe-card.pipe-active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 22px -8px var(--accent); }
+    .working-pill { background: var(--success-bg); color: var(--success); margin-left: 8px; }
     .pipe { display: flex; align-items: stretch; gap: 10px; margin-top: 4px; }
+    .pipe-stage .ps-cap { font-size: 10px; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.05em; font-variant-numeric: tabular-nums; margin-bottom: 6px; min-height: 12px; }
     .pipe-stage { flex: 1; background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px 10px; text-align: center; cursor: pointer; transition: border-color .15s, transform .1s; }
     .pipe-stage:hover { border-color: var(--accent); }
     .pipe-stage:active { transform: scale(0.98); }
@@ -1287,15 +1291,19 @@
 
           <!-- two pipelines -->
           <div class="pipe-grid">
-            <div class="card">
-              <div class="card-title">Follow pipeline</div>
+            <div class="card pipe-card" :class="{ 'pipe-active': scraper && scraper.working==='follow' }">
+              <div class="card-title">Follow pipeline
+                <span class="pill working-pill" x-show="scraper && scraper.working==='follow'">working</span>
+              </div>
               <div class="pipe">
                 <button class="pipe-stage" @click="openPool('follow_backlog')" title="Browse the scrape backlog">
+                  <div class="ps-cap">&nbsp;</div>
                   <div class="ps-n" x-text="fmtNum(dispScraper.follow_backlog)"></div>
                   <div class="ps-l">backlog</div>
                 </button>
                 <div class="pipe-arrow"><span class="pa-cap">vetting</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="14 6 20 12 14 18"/></svg></div>
                 <button class="pipe-stage accent" @click="openPool('follow')" title="Browse the follow pool">
+                  <div class="ps-cap" x-text="'max ' + fmtNum(dispScraper.follow_high)"></div>
                   <div class="ps-n" x-text="fmtNum(dispScraper.follow_pool)"></div>
                   <div class="ps-l">follow pool</div>
                 </button>
@@ -1305,15 +1313,19 @@
                 <span class="chip-stat ghost-chip"><b x-text="fmtNum(dispScraper.checked)"></b> vetted-kept</span>
               </div>
             </div>
-            <div class="card">
-              <div class="card-title">Reach pipeline</div>
+            <div class="card pipe-card" :class="{ 'pipe-active': scraper && scraper.working==='reach' }">
+              <div class="card-title">Reach pipeline
+                <span class="pill working-pill" x-show="scraper && scraper.working==='reach'">working</span>
+              </div>
               <div class="pipe">
                 <button class="pipe-stage" @click="openPool('reach_backlog')" title="Browse the reach backlog">
+                  <div class="ps-cap">&nbsp;</div>
                   <div class="ps-n" x-text="fmtNum(dispScraper.reach_backlog)"></div>
                   <div class="ps-l">backlog</div>
                 </button>
                 <div class="pipe-arrow"><span class="pa-cap">vet + link</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="14 6 20 12 14 18"/></svg></div>
                 <button class="pipe-stage accent" @click="openPool('reach')" title="Browse the reach pool">
+                  <div class="ps-cap" x-text="'max ' + fmtNum(dispScraper.reach_high)"></div>
                   <div class="ps-n" x-text="fmtNum(dispScraper.reach_pool)"></div>
                   <div class="ps-l">reach pool</div>
                 </button>

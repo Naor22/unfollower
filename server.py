@@ -1049,6 +1049,11 @@ def _live_scraper_counts() -> dict:
         return _scraper_counts_cache["data"]
     d = {}
     try:
+        cfg = bot.load_config()
+        limits = cfg.get("limits", {}) or {}
+        scr = cfg.get("scraper", {}) or {}
+        mult = int(scr.get("follow_pool_mult", 5) or 5)
+        reach_mult = int(scr.get("reach_pool_mult", mult) or mult)
         d = {
             "follow_backlog": len(bot.read_scraper_todo()),
             "follow_pool": bot_instance._pool_ready({}),
@@ -1056,11 +1061,27 @@ def _live_scraper_counts() -> dict:
             "reach_pool": bot_instance._reach_pool_ready(),
             "rejected": len(bot.read_filter_rejected_log()),
             "checked": len(bot.read_filter_checked_log()),
+            # High-water marks = the most the scraper will build each pool to.
+            "follow_high": max(1, int(limits.get("follows_per_day", 30) or 30) * mult),
+            "reach_high": max(1, int(limits.get("likes_per_day", 100) or 100) * reach_mult),
         }
     except Exception:
         pass
     _scraper_counts_cache.update(ts=now, data=d)
     return d
+
+
+def _scraper_working(phase: str, active: bool):
+    """Which pipeline the scraper is on RIGHT NOW (for the active-border), from its
+    live phase: 'reach' / 'follow' / None when idle."""
+    if not active:
+        return None
+    p = (phase or "").lower()
+    if "reach" in p:
+        return "reach"
+    if any(k in p for k in ("vet", "scrap", "candidate", "follow")):
+        return "follow"
+    return None
 
 
 @app.get("/api/scraper")
@@ -1085,6 +1106,8 @@ async def scraper_status():
     # phase). It's False while the scraper is up but idle/paused (e.g. the bot is acting),
     # so the UI can show "idle" rather than "on". Same logic the bot uses internally.
     data["active"] = bool(running) and bot_instance._scraper_active()
+    # Which pipeline is being worked right now (for the UI's active highlight).
+    data["working"] = _scraper_working(data.get("phase"), data["active"])
     # Live pool counts (always current). Keep legacy keys in sync for any old reader.
     counts = _live_scraper_counts()
     data.update(counts)
