@@ -3094,27 +3094,31 @@ class Bot:
                         not bot_running or self._day_room("follows", day_cfg) <= 0)
                     reach_build_high = reach_need and (
                         not bot_running or self._day_room("likes", day_cfg) <= 0)
-                    # Balance the two pools: don't push either past low-water while the
-                    # other is still below it (so a big follow backlog can't vet to 5x cap
-                    # before reach gets a turn). target = high only when this pool may build
-                    # AND the other is already at low-water; otherwise cap at low-water.
-                    reach_below_low = reach_need and reach_ready < reach_low
-                    follow_below_low = follow_need and follow_ready < follow_low
-                    follow_target = follow_high if (follow_build_high and not reach_below_low) else follow_low
-                    reach_target = reach_high if (reach_build_high and not follow_below_low) else reach_low
-                    follow_full = (not follow_need) or (follow_ready >= follow_target)
-                    reach_full = (not reach_need) or (reach_ready >= reach_target)
+                    # STRICT fill ORDER (the whole ladder runs in ONE pass, in this
+                    # sequence, so the bot can always START before either pool spends time
+                    # on its deep buffer, and follow's buffer is built before reach's):
+                    #   1) follow → low-water   2) reach → low-water
+                    #   3) follow → high-water  4) reach → high-water
+                    # The high-water phases only run when allowed to build past low-water
+                    # (follow_build_high / reach_build_high = bot done for the day / stopped).
+                    def _follow_short(t):
+                        return follow_need and self._pool_ready(day_cfg) < t
+                    def _reach_short(t):
+                        return reach_need and self._reach_pool_ready() < t
+
+                    work = (_follow_short(follow_low) or _reach_short(reach_low)
+                            or (follow_build_high and _follow_short(follow_high))
+                            or (reach_build_high and _reach_short(reach_high)))
                     if coordinate and self._bot_is_acting():
                         disconnect()   # bot is working → free the Pi, close our Chrome
                         self._write_scraper_status(
                             phase=f"idle - bot active (follow {follow_ready}, reach {reach_ready})")
                         self._interruptible_sleep(60)
                         continue
-                    if follow_full and reach_full:
+                    if not work:
                         disconnect()
                         self._write_scraper_status(
-                            phase=f"pools at target - follow {follow_ready}/{follow_target}, "
-                                  f"reach {reach_ready}/{reach_target}; idle")
+                            phase=f"pools at target - follow {follow_ready}, reach {reach_ready}; idle")
                         self._interruptible_sleep(idle_poll)
                         continue
 
@@ -3123,62 +3127,70 @@ class Bot:
                     if page is None:
                         self._interruptible_sleep(30)   # not logged in - retry later
                         continue
-                    # 1. FOLLOW pool, up to this pass's target (low-water until reach
-                    #    also has a day's worth, then high-water) so reach isn't starved.
-                    #    VET-FIRST: drain the already-scraped backlog into the eligible
-                    #    list before scraping anything new - a fresh scrape is wasteful
-                    #    when the queued backlog can already close the gap, and most
-                    #    re-scraped names are dupes of accounts we've already vetted.
-                    if follow_need and follow_ready < follow_target:
-                        self._filter_pool(page, day_cfg, target=follow_target)
-                        if self._stop_event.is_set():
-                            break
-                        # 2. Still short and the backlog couldn't cover it? Scrape new
-                        #    sources (stops the moment the backlog hits candidate_pool_min
-                        #    thanks to live ingest), then vet what we just queued.
-                        if self._pool_ready(day_cfg) < follow_target:
-                            self._write_scraper_status(phase="scraping sources")
-                            try:
-                                exclude = {c["username"] for c in read_follow_candidates()}
-                                exclude |= {r["username"] for r in read_filter_rejected_log()}
-                                self._scrape_candidates(
-                                    page, day_cfg,
-                                    pool_read=read_scraper_todo,
-                                    pool_write=write_scraper_todo,
-                                    extra_exclude=exclude,
-                                    status_cb=lambda ph: self._write_scraper_status(phase=ph))
-                            except Exception as e:
-                                self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
-                            if self._stop_event.is_set():
-                                break
-                            self._filter_pool(page, day_cfg, target=follow_target)
-                            if self._stop_event.is_set():
-                                break
-                    # If the bot started working during the follow pass, release the Pi
-                    # NOW (don't start reach harvesting alongside it).
-                    if coordinate and self._bot_is_acting():
-                        disconnect()
-                        self._write_scraper_status(phase="idle - bot active")
-                        self._interruptible_sleep(60)
+
+                    def fill_follow(target):
+                        """Vet-first: drain the already-scraped backlog into the eligible
+                        list before scraping anything new (re-scraped names are mostly
+                        dupes), then scrape fresh sources only if still short."""
+                        if not _follow_short(target):
+                            return
+                        self._filter_pool(page, day_cfg, target=target)
+                        if self._stop_event.is_set() or self._pool_ready(day_cfg) >= target:
+                            return
+                        self._write_scraper_status(phase="scraping sources")
+                        try:
+                            exclude = {c["username"] for c in read_follow_candidates()}
+                            exclude |= {r["username"] for r in read_filter_rejected_log()}
+                            self._scrape_candidates(
+                                page, day_cfg,
+                                pool_read=read_scraper_todo,
+                                pool_write=write_scraper_todo,
+                                extra_exclude=exclude,
+                                status_cb=lambda ph: self._write_scraper_status(phase=ph))
+                        except Exception as e:
+                            self.state.emit("log", {"level": "error", "msg": f"scrape pass failed: {e}"})
+                        if not self._stop_event.is_set():
+                            self._filter_pool(page, day_cfg, target=target)
+
+                    def fill_reach(target):
+                        if not _reach_short(target):
+                            return
+                        rsrc = ((day_cfg.get("engagement", {}) or {}).get("reach_source")
+                                or "hashtags").lower()
+                        try:
+                            if rsrc == "prospects":
+                                self._harvest_reach_prospects(page, day_cfg, target=target)
+                            else:
+                                self._harvest_reach_links(page, day_cfg, target=target)
+                        except Exception as e:
+                            self.state.emit("log", {"level": "error", "msg": f"reach harvest failed: {e}"})
+
+                    def _bot_took_over():
+                        """Release the Pi the instant the bot starts working mid-ladder."""
+                        if coordinate and self._bot_is_acting():
+                            disconnect()
+                            self._write_scraper_status(phase="idle - bot active")
+                            self._interruptible_sleep(60)
+                            return True
+                        return self._stop_event.is_set()
+
+                    # ---- run the ladder, in order, yielding to the bot between phases ----
+                    # _bot_took_over() handles its own disconnect + back-off, so on a
+                    # yield we just `continue` to the next loop iteration (skip the tail).
+                    fill_follow(follow_low)                       # 1) follow → low
+                    if _bot_took_over():
                         continue
-                    # 3. REACH pool: harvest post links for the main account to like
-                    #    (re-check follow's low-water so reach tops up the instant follow
-                    #    reached a day's worth within this same pass).
-                    if reach_need:
-                        if reach_build_high and self._pool_ready(day_cfg) >= follow_low:
-                            reach_target = reach_high
-                        if reach_ready < reach_target:
-                            rsrc = ((day_cfg.get("engagement", {}) or {}).get("reach_source")
-                                    or "hashtags").lower()
-                            try:
-                                if rsrc == "prospects":
-                                    self._harvest_reach_prospects(page, day_cfg, target=reach_target)
-                                else:
-                                    self._harvest_reach_links(page, day_cfg, target=reach_target)
-                            except Exception as e:
-                                self.state.emit("log", {"level": "error", "msg": f"reach harvest failed: {e}"})
-                            if self._stop_event.is_set():
-                                break
+                    fill_reach(reach_low)                         # 2) reach → low
+                    if _bot_took_over():
+                        continue
+                    if follow_build_high:
+                        fill_follow(follow_high)                  # 3) follow → high
+                        if _bot_took_over():
+                            continue
+                    if reach_build_high:
+                        fill_reach(reach_high)                    # 4) reach → high
+                    if self._stop_event.is_set():
+                        break
                     # 4. idle until the next pass → close the browser, free the Pi.
                     #    Short poll (not the full idle_seconds) so the heartbeat stays
                     #    fresh and a newly-needed pool is picked up within a minute.
