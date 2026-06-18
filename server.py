@@ -595,13 +595,22 @@ async def get_source_analytics():
     return {"rows": rows}
 
 
+_analytics_cache = {"ts": 0.0, "data": None}
+
+
 @app.get("/api/analytics")
 async def get_analytics():
     """Everything the Analytics page graphs: growth, daily action volumes, totals
     & rates, failure/skip/reject reason breakdowns, and runtime/uptime/restart/error
-    stats derived from the lifecycle event log."""
+    stats derived from the lifecycle event log. TTL-cached (~30s): this reads ~14 logs
+    in full (several through _dedup_lines) and grows with the account, so on a Pi it's
+    the heaviest endpoint - no need to recompute it on every dashboard refresh."""
     import collections as _c
     import json as _json
+
+    now = time.time()
+    if _analytics_cache["data"] is not None and now - _analytics_cache["ts"] < 30:
+        return _analytics_cache["data"]
 
     def day(ts):
         return (ts or "")[:10]
@@ -765,13 +774,15 @@ async def get_analytics():
         "likes": rate_stats(_epochs(likes_ts)),
     }
 
-    return {
+    payload = {
         "totals": totals, "rates": rates, "daily": daily_list, "growth": growth,
         "fail_reasons": reason_counts(f_failed + failed),
         "skip_reasons": reason_counts(f_skipped),
         "reject_reasons": reason_counts(rejected),
         "runtime": runtime, "today": today, "throughput": throughput,
     }
+    _analytics_cache.update(ts=now, data=payload)
+    return payload
 
 
 @app.get("/api/activity")

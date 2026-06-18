@@ -441,14 +441,31 @@ def _migrate_config(raw: dict) -> dict:
     return c
 
 
+_config_cache = {"mtime": None, "cfg": None}
+
+
 def load_config() -> dict:
-    with open(CONFIG_PATH, encoding="utf-8") as f:
-        return _migrate_config(yaml.safe_load(f))
+    """Parse + migrate config.yaml, CACHED by file mtime. load_config is called from
+    nearly every hot path (each read_*_log via _log_path, the run/scraper loops, the
+    watchdog, reach ticks), and parsing YAML + running _migrate_config (a deepcopy +
+    dozens of key walks) on every call is pure wasted CPU on the Pi. We re-parse only
+    when the file actually changes, and return a deep copy so a caller mutating the
+    result can't corrupt the cache."""
+    try:
+        mtime = os.path.getmtime(CONFIG_PATH)
+    except OSError:
+        mtime = None
+    if _config_cache["cfg"] is None or _config_cache["mtime"] != mtime:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            _config_cache["cfg"] = _migrate_config(yaml.safe_load(f))
+        _config_cache["mtime"] = mtime
+    return copy.deepcopy(_config_cache["cfg"])
 
 
 def save_config(data: dict) -> None:
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(_migrate_config(data), f, sort_keys=False, default_flow_style=False)
+    _config_cache["mtime"] = None   # force a re-read on next load (mtime may be same-second)
 
 
 def load_whitelist() -> set[str]:
@@ -2810,29 +2827,16 @@ class Bot:
 
     def _write_scraper_status(self, error: Optional[str] = None,
                               phase: str = "") -> None:
-        """Heartbeat + counts for the dashboard's Scraper card. Atomic write so the
-        server never reads a half-written file. The status FILE (not the WS state)
-        is how this separate process reports to the dashboard."""
-        try:
-            todo = read_scraper_todo()
-            result = read_follow_candidates()    # eligible-only result list
-            done = self._follow_done_set(load_whitelist(), self._me)
-            ready = sum(1 for c in result if c["username"] not in done)
-        except Exception:
-            todo, ready = [], 0
-        status = {
-            "ts": time.time(),
-            "phase": phase,
-            "backlog": len(todo),                # raw scraped, awaiting vetting
-            "ready": ready,                      # eligible & not yet followed (bot consumes)
-            "reach_ready": self._reach_pool_ready(),  # harvested post links not yet liked
-            "rejected": len(read_filter_rejected_log()),
-            "error": error,
-        }
+        """Lightweight heartbeat for the dashboard's Scraper card: timestamp + current
+        phase + any error. Atomic write so the server never reads a half-written file.
+        Counts are NOT computed here - the server derives live pool counts from disk
+        itself (TTL-cached), so recomputing them on every vetted profile (a done-set +
+        several full log reads) was pure wasted Pi work in the hottest loop."""
+        status = {"ts": time.time(), "phase": phase, "error": error}
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             tmp = SCRAPER_STATUS.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+            tmp.write_text(json.dumps(status), encoding="utf-8")
             os.replace(tmp, SCRAPER_STATUS)
         except Exception:
             pass
@@ -4721,18 +4725,32 @@ class Bot:
 
         return "exhausted"
 
+    _DONE_SET_TTL = 10.0   # seconds; the log-derived part is memoized this long
+
     def _follow_done_set(self, whitelist: set[str], my_username: str) -> set[str]:
         """Accounts we must never (re-)follow: already followed, permanently
         skipped, churned off, currently in our following list, whitelisted, or
         ourselves. Transient skips/failures are intentionally left out so they
-        get retried."""
-        done = {row["username"].lower() for row in read_followed_log()}
-        done |= {
-            row["username"].lower() for row in read_follow_skipped_log()
-            if row["reason"] in PERMANENT_FOLLOW_SKIPS
-        }
-        done |= {row["username"].lower() for row in read_churn_unfollowed_log()}
-        done |= {u.lower() for u in read_following_cache()}
+        get retried.
+
+        The log-derived part (4 logs + the following cache) is MEMOIZED for a few
+        seconds: this set is recomputed up to 4-5x per scraper cycle AND once per
+        follow, and re-reading those (growing) files each time is a major Pi cost.
+        Re-following within a run is already prevented by the loop's in-run `seen`
+        set, so a short staleness window here is safe; the whitelist + own handle are
+        re-unioned fresh on every call (cheap)."""
+        now = time.monotonic()
+        cache = getattr(self, "_done_logs_cache", None)
+        if cache is None or now - cache[0] > self._DONE_SET_TTL:
+            logs = {row["username"].lower() for row in read_followed_log()}
+            logs |= {
+                row["username"].lower() for row in read_follow_skipped_log()
+                if row["reason"] in PERMANENT_FOLLOW_SKIPS
+            }
+            logs |= {row["username"].lower() for row in read_churn_unfollowed_log()}
+            logs |= {u.lower() for u in read_following_cache()}
+            self._done_logs_cache = (now, logs)
+        done = set(self._done_logs_cache[1])   # copy so the union below can't mutate it
         done |= set(whitelist)
         if my_username:
             done.add(my_username.lower())
