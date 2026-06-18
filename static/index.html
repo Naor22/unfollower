@@ -2470,8 +2470,17 @@
             this.sourcesPostsText = (j.liker_posts || []).join('\n');
             this.sourcesCommentersText = (j.commenter_posts || []).join('\n');
             this.sourcesHashtagsText = (j.hashtags || []).join('\n');
+            // Keep config.targeting.sources in the CANONICAL schema. The /api/sources
+            // response uses LEGACY field names (follower_profiles/liker_posts/…); assigning
+            // it raw left no `profiles` key, so the next saveConfig() wrote sources WITHOUT
+            // profiles → wiped them on disk. Map to the real keys instead.
             if (this.config && this.config.targeting) {
-              this.config.targeting.sources = j;
+              this.config.targeting.sources = {
+                profiles: j.follower_profiles || [],
+                post_likers: j.liker_posts || [],
+                post_commenters: j.commenter_posts || [],
+                hashtags: j.hashtags || [],
+              };
             }
             this.showToast('Sources saved', 'success');
           } catch (e) { this.showToast(e.message, 'error'); }

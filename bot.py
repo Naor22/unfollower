@@ -444,6 +444,21 @@ def _migrate_config(raw: dict) -> dict:
     for p in _CONFIG_DROP:
         _cfg_del(c, p)
 
+    # Safety net: a stale dashboard once wrote targeting.sources with the /api/sources
+    # LEGACY field names (follower_profiles/liker_posts/commenter_posts + a stray `ok`),
+    # leaving no canonical `profiles` key → the bot/scraper saw zero profiles. Map any
+    # such legacy keys back to canonical (without clobbering good data) and drop them, so
+    # a corrupted config self-heals on the next load/save.
+    src = (c.get("targeting") or {}).get("sources")
+    if isinstance(src, dict):
+        for old, new in (("follower_profiles", "profiles"), ("liker_posts", "post_likers"),
+                         ("commenter_posts", "post_commenters")):
+            if old in src:
+                if not src.get(new):
+                    src[new] = src[old]
+                del src[old]
+        src.pop("ok", None)
+
     return c
 
 
