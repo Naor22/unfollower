@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -868,24 +869,41 @@ async def get_system():
     return s
 
 
+# uvicorn's per-request access log ("... - \"GET /api/x HTTP/1.1\" 200 OK"). The
+# dashboard polls several endpoints every couple seconds, so these drown out the
+# bot's action lines in the journal. We disable them at the source (access_log=False)
+# AND strip any already-recorded ones from the logs viewer.
+_ACCESS_LOG_RE = re.compile(r'"(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) .*HTTP/\d')
+
+
+def _strip_access_lines(text: str) -> str:
+    return "\n".join(ln for ln in text.splitlines() if not _ACCESS_LOG_RE.search(ln))
+
+
 @app.get("/api/logs")
-async def get_logs(lines: int = 400):
+async def get_logs(lines: int = 400, raw: bool = False):
     """Recent service logs for debugging freezes/restarts. Prefers the systemd journal
     (full process output: last activity before a hang, the watchdog restart, tracebacks);
     falls back to the persisted lifecycle + bot log events when the journal isn't readable
-    (non-Linux, or no journal permission)."""
+    (non-Linux, or no journal permission). HTTP access lines are filtered out unless
+    raw=true, so the bot's own action lines stay visible."""
     n = max(20, min(int(lines or 400), 2000))
     if sys.platform == "linux":
         service = (bot.load_config().get("server", {}) or {}).get("service_name", "unfollower")
-        base = ["journalctl", "-u", service, "-n", str(n), "--no-pager", "-o", "short-iso"]
+        # Pull extra lines because filtering access spam removes many; then tail to n.
+        fetch = n if raw else min(n * 6, 5000)
+        base = ["journalctl", "-u", service, "-n", str(fetch), "--no-pager", "-o", "short-iso"]
         # Try without sudo (works if the user is in the adm/systemd-journal group), then
         # with the same passwordless sudo the restart uses.
         for cmd in (base, ["sudo", "-n"] + base):
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 if r.returncode == 0 and r.stdout.strip():
+                    text = r.stdout.strip()
+                    if not raw:
+                        text = "\n".join(_strip_access_lines(text).splitlines()[-n:])
                     return {"ok": True, "source": "journal", "service": service,
-                            "text": r.stdout.strip()}
+                            "text": text}
             except Exception:
                 pass
 
@@ -1439,12 +1457,20 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     q: asyncio.Queue = asyncio.Queue()
     state_manager.subscribe(q)
-    await ws.send_json({"type": "state", "data": state_manager.snapshot()})
     try:
+        # Initial snapshot must be inside the guard: the client can close the
+        # socket mid-handshake (PWA backgrounding, page reload), and an
+        # unguarded send here throws a WebSocketDisconnect/ClientDisconnected
+        # traceback into the journal that buries real bot errors.
+        await ws.send_json({"type": "state", "data": state_manager.snapshot()})
         while True:
             msg = await q.get()
             await ws.send_json(msg)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        # RuntimeError covers Starlette's "Cannot call send once a close
+        # message has been sent" when the peer vanished between awaits.
+        pass
+    except Exception:
         pass
     finally:
         state_manager.unsubscribe(q)
@@ -1469,4 +1495,8 @@ if __name__ == "__main__":
     host = srv.get("host", "127.0.0.1")
     port = int(srv.get("port", 8000))
     print(f"dashboard on http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port)
+    # access_log=False: the dashboard polls several /api endpoints every couple
+    # seconds, so uvicorn's per-request access log floods the journal and buries
+    # the bot's own action lines (and any freeze traceback) under a wall of
+    # "GET /api/... 200". App logs, errors, and tracebacks still print.
+    uvicorn.run(app, host=host, port=port, access_log=False)
