@@ -1653,15 +1653,21 @@ class Bot:
         return out[:cap]
 
     def _scrape_candidates(self, page, cfg, pool_read=None, pool_write=None,
-                           extra_exclude=None, on_progress=None, status_cb=None) -> int:
-        """Run every configured source, dedup against the follow done-set + the
+                           extra_exclude=None, on_progress=None, status_cb=None,
+                           done_set=None) -> int:
+        """Run every configured source, dedup against the exclusion set + the
         existing pool (+ extra_exclude), and append new usernames. Stops early once
         the pending pool reaches candidate_pool_min. Returns the count added.
 
         Defaults write the bot's follow_candidates pool (core-bot self-scrape). The
         scraper service passes pool_read/pool_write for scraper_todo and
         extra_exclude = already-vetted (result) + rejected usernames, so it never
-        re-queues accounts it has already evaluated."""
+        re-queues accounts it has already evaluated.
+
+        `done_set` overrides the exclusion set. Default (None) = the FOLLOW done-set
+        (never re-follow). The reach harvest passes a SMALLER set (just accounts we
+        currently follow + self) so it isn't starved of every account the follow side
+        already touched - reach can like a prospect's post even if we've followed them."""
         pool_read = pool_read or read_follow_candidates
         pool_write = pool_write or write_follow_candidates
         targeting = cfg.get("targeting", {}) or {}
@@ -1681,7 +1687,7 @@ class Bot:
             return self._scraper_service and _coordinate and self._bot_is_acting()
 
         my = (os.getenv("IG_USERNAME") or "").lower()
-        done = self._follow_done_set(load_whitelist(), my)
+        done = done_set if done_set is not None else self._follow_done_set(load_whitelist(), my)
 
         pool = pool_read()
         existing = {c["username"] for c in pool} | (extra_exclude or set())
@@ -4215,18 +4221,26 @@ class Bot:
         pool = [e for e in read_reach_pool() if e.get("url") not in liked]
         have_users = {(e.get("username") or "").lower() for e in pool if e.get("username")}
         have_urls = {e.get("url") for e in pool}
-        done = self._follow_done_set(load_whitelist(), self._me)
+        # Reach excludes ONLY accounts we currently follow (no point reach-liking someone
+        # who already sees our feed) + own handle - NOT the whole follow done-set. Reusing
+        # the full done-set starved reach: from the shared sources the follow side has
+        # already consumed almost everything, so reach was left only the unusable dregs.
+        # With this narrower set, reach can target the same active prospects the follow
+        # side draws from (incl. churned / not-yet-followed) and actually fill its pool.
+        done = {u.lower() for u in read_following_cache()}
+        if self._me:
+            done.add(self._me.lower())
         self._write_scraper_status(phase=f"harvesting reach prospects ({len(pool)}/{target})")
         if len(pool) >= target:
             return
 
         # 1) Collect raw prospect usernames into the SEPARATE reach todo (same sources +
-        #    diversity as the follow scrape; excludes the done-set + accounts already pooled).
+        #    diversity as follow; reach exclusion = currently-following + self + already-pooled).
         try:
             self._scrape_candidates(
                 page, cfg,
                 pool_read=read_reach_todo, pool_write=write_reach_todo,
-                extra_exclude=(have_users | done),
+                extra_exclude=have_users, done_set=done,
                 status_cb=lambda ph: self._write_scraper_status(phase=ph))
         except Exception as e:
             self.state.emit("log", {"level": "error", "msg": f"reach prospect scrape failed: {e}"})
