@@ -117,6 +117,7 @@ class StateManager:
         # it so the dashboard can show a live scraper feed without the scraper writing the
         # shared activity.json). Written on every 'log' emit, capped small.
         self._event_log_path = event_log_path
+        self._log_pool = ""   # scraper: which pipeline ("follow"/"reach") is emitting logs now
         # Liveness marker for the watchdog. Bumped on every state update/emit AND
         # on every interruptible-sleep tick, so legitimate long sleeps (cooldowns,
         # daily loop) keep it fresh while a genuine hang (e.g. a frozen Playwright
@@ -154,6 +155,11 @@ class StateManager:
         self.last_heartbeat = time.time()
         payload = dict(payload)
         payload.setdefault("_time", time.strftime("%H:%M:%S"))
+        # Tag scraper log lines with the pipeline currently working (set by the bot), so
+        # pipeline-agnostic lines ("scrape sweep", "+N from @x") get the right reach/follow
+        # badge instead of being text-classified as "follow".
+        if event_type == "log" and getattr(self, "_log_pool", ""):
+            payload.setdefault("pool", self._log_pool)
         msg = {"type": event_type, "data": payload}
         # Record to the shared feed (everything except high-frequency 'state').
         self._events.append(msg)
@@ -2936,6 +2942,16 @@ class Bot:
                                   phase_detail=sleeping_detail)
             self._interruptible_sleep(min(5.0, remaining))
 
+    def _set_working_pool(self, p: str) -> None:
+        """Set which pipeline the scraper is working ('follow' / 'reach' / ''), used for
+        BOTH the dashboard pipeline border (status file) and the per-line log badges
+        (the StateManager stamps each scraper log with this)."""
+        self._working_pool = p
+        try:
+            self.state._log_pool = p
+        except Exception:
+            pass
+
     def _write_scraper_status(self, error: Optional[str] = None,
                               phase: str = "") -> None:
         """Lightweight heartbeat for the dashboard's Scraper card: timestamp + current
@@ -3162,7 +3178,7 @@ class Bot:
 
                 append_event("scraper_start")
                 while not self._stop_event.is_set():
-                    self._working_pool = ""   # cleared each cycle; the fill_* set it when working
+                    self._set_working_pool("")   # cleared each cycle; the fill_* set it when working
                     day_cfg = load_config()
                     scr = day_cfg.get("scraper", {}) or {}
                     idle = float(scr.get("idle_seconds", 600))
@@ -3252,7 +3268,7 @@ class Bot:
                         dupes), then scrape fresh sources only if still short."""
                         if not _follow_short(target):
                             return
-                        self._working_pool = "follow"   # so the UI border tracks THIS pipeline
+                        self._set_working_pool("follow")   # so the UI border + log badges track THIS pipeline
                         self._filter_pool(page, day_cfg, target=target)
                         if self._stop_event.is_set() or self._pool_ready(day_cfg) >= target:
                             return
@@ -3274,7 +3290,7 @@ class Bot:
                     def fill_reach(target):
                         if not _reach_short(target):
                             return
-                        self._working_pool = "reach"   # so the UI border tracks THIS pipeline
+                        self._set_working_pool("reach")   # so the UI border + log badges track THIS pipeline
                         rsrc = ((day_cfg.get("engagement", {}) or {}).get("reach_source")
                                 or "hashtags").lower()
                         try:
@@ -3289,7 +3305,7 @@ class Bot:
                         """Release the Pi the instant the bot starts working mid-ladder."""
                         if coordinate and self._bot_is_acting():
                             disconnect()
-                            self._working_pool = ""
+                            self._set_working_pool("")
                             self._write_scraper_status(phase="idle - bot active")
                             self._interruptible_sleep(60)
                             return True
@@ -3316,7 +3332,7 @@ class Bot:
                     #    Short poll (not the full idle_seconds) so the heartbeat stays
                     #    fresh and a newly-needed pool is picked up within a minute.
                     disconnect()
-                    self._working_pool = ""
+                    self._set_working_pool("")
                     self._write_scraper_status(phase="idle")
                     self._interruptible_sleep(idle_poll * random.uniform(0.85, 1.15))
                 disconnect()

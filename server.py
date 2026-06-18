@@ -1179,7 +1179,10 @@ async def scraper_log():
     pipeline it belongs to. Written by the scraper process to its own ring file."""
     out = []
     for e in bot.read_scraper_activity():
-        out.append({**e, "pool": _classify_log((e.get("data") or {}).get("msg", ""))})
+        d = e.get("data") or {}
+        # Prefer the pipeline the scraper stamped on the line; fall back to text inference.
+        pool = d.get("pool") or _classify_log(d.get("msg", ""))
+        out.append({**e, "pool": pool})
     return {"events": out}
 
 
