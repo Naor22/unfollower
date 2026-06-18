@@ -2775,7 +2775,13 @@ class Bot:
             need = self._reach_likes_left(cfg)
             ready = self._reach_pool_ready()
             parts.append(f"reach {ready}/{need}")
-            if ready < need:
+            # Reach is SUPPLEMENTARY - never let it deadlock the bot's main work. Only
+            # wait on it while the scraper is ACTIVELY filling it; once the scraper goes
+            # idle (e.g. most prospects fail the filters so reach plateaus below low-water,
+            # backlog drained), proceed with whatever reach links exist - the bot likes
+            # those and just skips reach when the pool runs dry. The scraper keeps topping
+            # reach up during the bot's dead time.
+            if ready < need and self._scraper_active():
                 warm = False
         return warm, ", ".join(parts)
 
