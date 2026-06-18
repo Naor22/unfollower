@@ -3576,10 +3576,14 @@ class Bot:
 
     def _like_recent_posts(self, page, target: str, n: int) -> int:
         """Like up to `n` of the target's most recent posts. Returns how many were
-        liked. Best-effort. Waits for the grid + the like control to actually render
-        (the previous version evaluated too early and found nothing)."""
+        liked. Best-effort. Each like is LEDGERED (counts toward limits.likes_per_day)
+        and the loop stops the moment the like cap / active-hours gate closes, so
+        after-follow likes can't silently blow past the daily like budget. A rate-limit
+        sets self._like_rate_limited so the caller can back off (soft-block)."""
+        self._like_rate_limited = False
         if n <= 0:
             return 0
+        cfg = load_config()
         target = target.lstrip("@").lower()
         try:
             page.goto(f"https://www.instagram.com/{target}/", wait_until="domcontentloaded")
@@ -3612,13 +3616,17 @@ class Bot:
         for url in urls:
             if liked >= n or self._stop_event.is_set() or self._story_stop.is_set():
                 break
+            if not self._can_act("likes", cfg):
+                break   # daily like cap reached / outside active hours
             try:
                 page.goto(url, wait_until="domcontentloaded")
                 self._interruptible_sleep(random.uniform(1.5, 3.0))
                 if self._click_like(page):
                     liked += 1
+                    self._day_record("likes", cfg)   # ledger it against the like cap
                     self._interruptible_sleep(random.uniform(1.0, 2.5))
                     if self._rate_limited(page):
+                        self._like_rate_limited = True
                         break
             except Exception:
                 continue
@@ -3705,21 +3713,28 @@ class Bot:
             f"Like={likes} Unlike {before}->{after}"})
         return False
 
-    def _engage_after_follow(self, page, target: str, eng_cfg: dict) -> None:
+    def _engage_after_follow(self, page, target: str, eng_cfg: dict) -> str:
         """Optional touches right after a follow (still on/near the profile): view
         their story and/or like a couple posts. Controlled by follow.engagement.
-        Never raises - engagement is best-effort and must not abort a follow."""
+        Never raises - engagement is best-effort and must not abort the follow that
+        already happened. Returns 'block' if after-follow likes tripped a soft-block
+        that should stop the run for the day, else ''."""
         if not eng_cfg:
-            return
+            return ""
         try:
             if eng_cfg.get("on_follow_view_story", False):
                 self._view_story(page, target)
             n = int(eng_cfg.get("on_follow_like_posts", 0) or 0)
             if n > 0:
                 self._like_recent_posts(page, target, n)
+                if self._like_rate_limited:
+                    # A soft-block on the after-follow likes is a real IG signal -
+                    # record + back off (and stop for the day past the daily max).
+                    return self._handle_soft_block(load_config())
         except Exception as e:
             self.state.emit("log", {"level": "error",
                                     "msg": f"engagement on @{target} failed: {e}"})
+        return ""
 
     def _build_story_queue(self) -> list[str]:
         """Candidate-pool members eligible for a story check: not in the follow done
@@ -4421,34 +4436,39 @@ class Bot:
             return ""
         return self._do_reach(page, self._story_queue.pop(0))
 
-    def _maybe_story_reach_tick(self, page) -> None:
+    def _maybe_story_reach_tick(self, page) -> str:
         """Interleaved story-reach for NON-CDP modes (where a 2nd concurrent tab
         isn't safe). In CDP mode the background worker handles it, so this no-ops.
-        Views one pool story every `story_reach_every_actions` actions."""
+        Likes one pool post every `reach_cadence` actions. Returns 'block' if a reach
+        rate-limit escalated to a soft-block that should stop the run, else ''."""
         if self._story_worker_active:
             # Defer to the background worker - but self-heal if its thread died
             # (e.g. the 2nd CDP connection failed), so we don't silently stop
             # doing story-reach entirely.
             if self._story_thread is not None and self._story_thread.is_alive():
-                return
+                return ""
             self._story_worker_active = False
             self.state.emit("log", {"level": "info",
                                     "msg": "story-reach: background worker gone - using interleaved mode"})
         cfg = load_config()
         eng = cfg.get("engagement", {}) or {}
         if not eng.get("reach_enabled", False):
-            return
+            return ""
         # Respect the per-day like cap + active hours (reach is mostly likes).
         if not self._can_act("likes", cfg):
-            return
+            return ""
         # Fire after a RANDOM number of actions (not every single one) so a like
         # doesn't follow every unfollow like clockwork - looks less robotic.
         self._story_tick += 1
         if self._story_tick < self._story_next:
-            return
+            return ""
         self._story_tick = 0
         self._story_next = self._roll_reach_interval(eng)
-        self._reach_one(page)
+        # A reach like that gets rate-limited is a real IG signal - back off like the
+        # follow/unfollow paths do, instead of silently liking into the block.
+        if self._reach_one(page) == "ratelimit":
+            return self._handle_soft_block(cfg)
+        return ""
 
     def _roll_reach_interval(self, eng) -> int:
         lo = int(eng.get("reach_cadence_min",
@@ -4674,7 +4694,8 @@ class Bot:
 
             # Interleaved story-reach marketing - ticks on EVERY processed target
             # (not just real unfollows), so it runs even through a stretch of skips.
-            self._maybe_story_reach_tick(page)
+            if self._maybe_story_reach_tick(page) == "block":
+                return "block"
 
             # Pacing applies to REAL unfollows only - Instagram rate-limits the
             # unfollow ACTION, not page visits. Skips/failures (deleted,
@@ -4890,7 +4911,8 @@ class Bot:
                 self._adjust_following(+1)
                 self._tick_resync(page)
                 # Extra exposure touches while we're still on the profile.
-                self._engage_after_follow(page, target, eng_cfg)
+                if self._engage_after_follow(page, target, eng_cfg) == "block":
+                    return "block"
             elif result in ("already_following", "skipped_follows_you", "skipped_private",
                             "skipped_no_posts", "skipped_filtered", "unavailable"):
                 reason = {
@@ -4941,7 +4963,8 @@ class Bot:
             if self._stop_event.is_set():
                 return "stopped"
 
-            self._maybe_story_reach_tick(page)   # interleaved story-reach, every target
+            if self._maybe_story_reach_tick(page) == "block":   # interleaved story-reach, every target
+                return "block"
 
             # Pace real follows only - IG rate-limits the follow ACTION, not page
             # visits. Skips/failures continue after a brief pause so we blow
@@ -5240,7 +5263,8 @@ class Bot:
                     return "block"
                 self._jitter(1.0, 3.0)
 
-            self._maybe_story_reach_tick(page)   # interleaved story-reach, every target
+            if self._maybe_story_reach_tick(page) == "block":   # interleaved story-reach, every target
+                return "block"
 
         return "exhausted"
 
