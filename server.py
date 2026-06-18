@@ -1117,8 +1117,13 @@ async def scraper_status():
     # phase). It's False while the scraper is up but idle/paused (e.g. the bot is acting),
     # so the UI can show "idle" rather than "on". Same logic the bot uses internally.
     data["active"] = bool(running) and bot_instance._scraper_active()
-    # Which pipeline is being worked right now (for the UI's active highlight).
-    data["working"] = _scraper_working(data.get("phase"), data["active"])
+    # Which pipeline is being worked right now (for the UI's active highlight). Prefer
+    # the explicit stamp the scraper writes (accurate during BOTH scraping and vetting);
+    # fall back to phase-text inference for older status files.
+    if data["active"]:
+        data["working"] = data.get("pool") or _scraper_working(data.get("phase"), True)
+    else:
+        data["working"] = None
     # Live pool counts (always current). Keep legacy keys in sync for any old reader.
     counts = _live_scraper_counts()
     data.update(counts)

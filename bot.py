@@ -2845,7 +2845,8 @@ class Bot:
         Counts are NOT computed here - the server derives live pool counts from disk
         itself (TTL-cached), so recomputing them on every vetted profile (a done-set +
         several full log reads) was pure wasted Pi work in the hottest loop."""
-        status = {"ts": time.time(), "phase": phase, "error": error}
+        status = {"ts": time.time(), "phase": phase, "error": error,
+                  "pool": getattr(self, "_working_pool", "")}   # which pipeline is working now
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             tmp = SCRAPER_STATUS.with_suffix(".json.tmp")
@@ -3049,6 +3050,7 @@ class Bot:
 
                 append_event("scraper_start")
                 while not self._stop_event.is_set():
+                    self._working_pool = ""   # cleared each cycle; the fill_* set it when working
                     day_cfg = load_config()
                     scr = day_cfg.get("scraper", {}) or {}
                     idle = float(scr.get("idle_seconds", 600))
@@ -3138,6 +3140,7 @@ class Bot:
                         dupes), then scrape fresh sources only if still short."""
                         if not _follow_short(target):
                             return
+                        self._working_pool = "follow"   # so the UI border tracks THIS pipeline
                         self._filter_pool(page, day_cfg, target=target)
                         if self._stop_event.is_set() or self._pool_ready(day_cfg) >= target:
                             return
@@ -3159,6 +3162,7 @@ class Bot:
                     def fill_reach(target):
                         if not _reach_short(target):
                             return
+                        self._working_pool = "reach"   # so the UI border tracks THIS pipeline
                         rsrc = ((day_cfg.get("engagement", {}) or {}).get("reach_source")
                                 or "hashtags").lower()
                         try:
@@ -3173,6 +3177,7 @@ class Bot:
                         """Release the Pi the instant the bot starts working mid-ladder."""
                         if coordinate and self._bot_is_acting():
                             disconnect()
+                            self._working_pool = ""
                             self._write_scraper_status(phase="idle - bot active")
                             self._interruptible_sleep(60)
                             return True
@@ -3199,6 +3204,7 @@ class Bot:
                     #    Short poll (not the full idle_seconds) so the heartbeat stays
                     #    fresh and a newly-needed pool is picked up within a minute.
                     disconnect()
+                    self._working_pool = ""
                     self._write_scraper_status(phase="idle")
                     self._interruptible_sleep(idle_poll * random.uniform(0.85, 1.15))
                 disconnect()
