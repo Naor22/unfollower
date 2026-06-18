@@ -4812,7 +4812,45 @@ class Bot:
         return 1   # followers / other
 
     @staticmethod
-    def _pick_diverse_candidate(eligible: list[dict], recent_seeds, max_streak: int) -> dict:
+    def _wilson_lower(k: int, n: int, z: float = 1.64) -> float:
+        """Lower bound of the Wilson score interval for a binomial rate (one-sided
+        ~90%). A conservative follow-back rate that doesn't over-trust small samples."""
+        if n <= 0:
+            return 0.0
+        phat = k / n
+        denom = 1.0 + z * z / n
+        centre = phat + z * z / (2 * n)
+        margin = z * ((phat * (1 - phat) + z * z / (4 * n)) / n) ** 0.5
+        return max(0.0, (centre - margin) / denom)
+
+    _PERF_MIN_SAMPLE = 12     # measured outcomes needed before a source is steered by data
+    _PERF_TTL = 60.0
+
+    def _source_perf(self) -> dict:
+        """Per-source follow-back PERFORMANCE weight from measured outcomes (memoized).
+        A source with >= _PERF_MIN_SAMPLE measured follow-backs gets a weight derived
+        from its Wilson-lower-bound rate - high converters favored, poor ones still get
+        occasional exploration (floor 0.25). Under that sample it's left out (treated as
+        neutral 1.0 by the picker) so new/unproven sources are explored, not judged on
+        noise. Closes the loop: measured follow-back rate steers future follow priority."""
+        now = time.monotonic()
+        cache = getattr(self, "_perf_cache", None)
+        if cache and now - cache[0] < self._PERF_TTL:
+            return cache[1]
+        agg: dict = {}
+        for r in read_follow_outcomes():
+            a = agg.setdefault(r.get("source") or "", [0, 0])
+            a[1] += 1
+            if r.get("followed_back"):
+                a[0] += 1
+        perf = {s: round(0.25 + self._wilson_lower(k, n) * 4.0, 3)
+                for s, (k, n) in agg.items() if n >= self._PERF_MIN_SAMPLE}
+        self._perf_cache = (now, perf)
+        return perf
+
+    @staticmethod
+    def _pick_diverse_candidate(eligible: list[dict], recent_seeds, max_streak: int,
+                                perf: dict = None) -> dict:
         """Pick the next account to follow: PRIORITY by source type, RANDOM within it.
 
         Seeds are grouped into intent tiers (commenters > hashtag/likers > followers).
@@ -4843,7 +4881,16 @@ class Bot:
             tiers.setdefault(Bot._seed_tier_weight(s), []).append(s)
         weights = list(tiers.keys())
         chosen = random.choices(weights, weights=weights, k=1)[0]
-        seed = random.choice(tiers[chosen])
+        tier_seeds = tiers[chosen]
+        # Within the chosen tier, favor seeds that historically convert better (measured
+        # follow-back rate); unproven seeds are neutral (1.0). Weighted-random, so it
+        # steers toward winners without ever fully starving the others - and it's WITHIN
+        # a tier, so it never reintroduces cross-type (count) bias.
+        if perf:
+            seed = random.choices(tier_seeds,
+                                  weights=[perf.get(s, 1.0) for s in tier_seeds], k=1)[0]
+        else:
+            seed = random.choice(tier_seeds)
         return random.choice(groups[seed])
 
     def _process_follow_day(self, page, cfg, max_actions=None) -> str:
@@ -4923,7 +4970,7 @@ class Bot:
             # follows spread evenly across all sources (equal odds per seed) instead
             # of draining one target's followers - the anti-bias picker.
             cand = self._pick_diverse_candidate(
-                eligible, self._recent_follow_seeds, max_same_seed)
+                eligible, self._recent_follow_seeds, max_same_seed, self._source_perf())
             target = cand["username"]
             source = cand.get("source", "")
             seen.add(target)
