@@ -1654,7 +1654,7 @@ class Bot:
 
     def _scrape_candidates(self, page, cfg, pool_read=None, pool_write=None,
                            extra_exclude=None, on_progress=None, status_cb=None,
-                           done_set=None) -> int:
+                           done_set=None, pool_min=None) -> int:
         """Run every configured source, dedup against the exclusion set + the
         existing pool (+ extra_exclude), and append new usernames. Stops early once
         the pending pool reaches candidate_pool_min. Returns the count added.
@@ -1673,7 +1673,9 @@ class Bot:
         targeting = cfg.get("targeting", {}) or {}
         sources = targeting.get("sources", {}) or {}
         per_cap = int(targeting.get("scrape_per_source_cap", 600))
-        pool_min = int(targeting.get("candidate_pool_min", 300))
+        # Backlog target for THIS call. Default = candidate_pool_min; callers (reach) pass
+        # a smaller value to scrape a quick batch and start vetting sooner (interleaving).
+        pool_min = int(pool_min) if pool_min is not None else int(targeting.get("candidate_pool_min", 300))
         # Per-SEED round-robin chunk: how many of a seed's raw usernames we drain
         # into the pool before rotating to the next seed. Keeps the todo/pool
         # interleaved across seeds instead of one big same-seed block (the filter
@@ -4309,71 +4311,87 @@ class Bot:
         if len(pool) >= target:
             return
 
-        # 1) Collect raw prospect usernames into the SEPARATE reach todo (same sources +
-        #    diversity as follow; reach exclusion = currently-following + self + already-pooled).
-        try:
-            self._scrape_candidates(
-                page, cfg,
-                pool_read=read_reach_todo, pool_write=write_reach_todo,
-                extra_exclude=have_users, done_set=done,
-                status_cb=lambda ph: self._write_scraper_status(phase=ph))
-        except Exception as e:
-            self.state.emit("log", {"level": "error", "msg": f"reach prospect scrape failed: {e}"})
-        if self._stop_event.is_set() or (coordinate and self._bot_is_acting()):
-            return
+        def _yield():
+            return self._stop_event.is_set() or (coordinate and self._bot_is_acting())
 
-        # 2) Vet each prospect (public + filters) and grab one recent post URL to like.
-        resolved: list[str] = []
-        for c in read_reach_todo():
-            if self._stop_event.is_set() or len(pool) >= target:
+        def vet_backlog() -> bool:
+            """Drain the current reach TODO into the pool: vet each (public + filters),
+            grab a post URL, append to the pool. Grows the reach POOL incrementally (each
+            KEEP), so the bot's progress gate keeps seeing it climb. Returns True if it
+            made any progress (vetted at least one)."""
+            resolved: list[str] = []
+            progressed = False
+            for c in read_reach_todo():
+                if _yield() or len(pool) >= target:
+                    break
+                u = (c.get("username") or "").lower()
+                if not u or u in have_users or u in done:
+                    resolved.append(u)
+                    continue
+                self._write_scraper_status(phase=f"vetting reach prospect @{u} ({len(pool)}/{target})")
+                try:
+                    reason, _meta = self._filter_one(page, u, filters)
+                except Exception as e:
+                    self.state.emit("log", {"level": "error", "msg": f"reach vet @{u} failed: {e}"})
+                    continue   # transient - leave in todo, retry next pass
+                resolved.append(u)        # vetted (kept or rejected) → drop from todo
+                progressed = True
+                if reason is not None:
+                    self.state.emit("log", {"level": "info", "msg": f"reach @{u} → reject ({reason})"})
+                    continue              # private / filtered out
+                # _filter_one just loaded this profile - grab the recent post link from
+                # that same page (no re-navigation); fall back to a fresh load if needed.
+                try:
+                    url = self._first_post_link_on_page(page)
+                    if not url:
+                        posts = self._collect_post_links(page, f"https://www.instagram.com/{u}/", 1)
+                        url = posts[0] if posts else None
+                except Exception:
+                    url = None
+                if not url or url in have_urls or url in liked:
+                    self.state.emit("log", {"level": "info", "msg": f"reach @{u} → no usable post"})
+                    continue
+                have_urls.add(url)
+                have_users.add(u)
+                pool.append({"url": url, "username": u,
+                             "source": c.get("source", "") or "reach", "added_at": int(time.time())})
+                write_reach_pool(pool)    # sole writer, atomic
+                self.state.emit("log", {"level": "info",
+                    "msg": f"reach [{len(pool)}/{target}] @{u} → KEEP (post linked)"})
+                self.state.update(
+                    reach_scraped=self.state.snapshot().get("reach_scraped", 0) + 1,
+                    reach_pool=len(pool))
+                self._jitter(lo, hi)
+            if resolved:   # drop vetted/excluded usernames from the todo; keep the rest
+                rset = set(resolved)
+                write_reach_todo([c for c in read_reach_todo()
+                                  if (c.get("username") or "").lower() not in rset])
+            return progressed
+
+        # INTERLEAVE: vet the queued backlog first (so the pool climbs immediately), then
+        # scrape a SMALL fresh batch and vet that, repeat. This keeps the reach POOL growing
+        # steadily - instead of scraping a big backlog for minutes (pool flat) while the bot
+        # gives up waiting and takes over before any vetting happens. Also, one source
+        # failing just ends that scrape batch; the next round vets what we already have.
+        BATCH = 40
+        for _round in range(50):                       # safety bound
+            if _yield() or len(pool) >= target:
                 break
-            if coordinate and self._bot_is_acting():   # bot woke up → release the Pi
+            vetted = vet_backlog()                     # drain whatever's queued → pool grows
+            if _yield() or len(pool) >= target:
                 break
-            u = (c.get("username") or "").lower()
-            if not u or u in have_users or u in done:
-                resolved.append(u)
-                continue
-            self._write_scraper_status(phase=f"vetting reach prospect @{u} ({len(pool)}/{target})")
-            try:
-                reason, _meta = self._filter_one(page, u, filters)
+            before = len(read_reach_todo())
+            try:                                       # top up the backlog with a small batch
+                self._scrape_candidates(
+                    page, cfg,
+                    pool_read=read_reach_todo, pool_write=write_reach_todo,
+                    extra_exclude=have_users, done_set=done, pool_min=BATCH,
+                    status_cb=lambda ph: self._write_scraper_status(phase=ph))
             except Exception as e:
-                self.state.emit("log", {"level": "error", "msg": f"reach vet @{u} failed: {e}"})
-                continue   # transient - leave in todo, retry next pass
-            resolved.append(u)        # vetted (kept or rejected) → drop from todo
-            if reason is not None:
-                self.state.emit("log", {"level": "info",
-                    "msg": f"reach @{u} → reject ({reason})"})
-                continue              # private / filtered out
-            # _filter_one just loaded this profile - grab the recent post link from that
-            # same page (no re-navigation). Fall back to a fresh load only if the grid
-            # didn't render in time.
-            try:
-                url = self._first_post_link_on_page(page)
-                if not url:
-                    posts = self._collect_post_links(page, f"https://www.instagram.com/{u}/", 1)
-                    url = posts[0] if posts else None
-            except Exception:
-                url = None
-            if not url or url in have_urls or url in liked:
-                self.state.emit("log", {"level": "info",
-                    "msg": f"reach @{u} → no usable post"})
-                continue
-            have_urls.add(url)
-            have_users.add(u)
-            pool.append({"url": url, "username": u,
-                         "source": c.get("source", "") or "reach", "added_at": int(time.time())})
-            write_reach_pool(pool)    # sole writer, atomic
-            self.state.emit("log", {"level": "info",
-                "msg": f"reach [{len(pool)}/{target}] @{u} → KEEP (post linked)"})
-            self.state.update(
-                reach_scraped=self.state.snapshot().get("reach_scraped", 0) + 1,
-                reach_pool=len(pool))
-            self._jitter(lo, hi)
-
-        if resolved:   # drop vetted/excluded usernames from the todo; keep the rest to retry
-            rset = set(resolved)
-            write_reach_todo([c for c in read_reach_todo()
-                              if (c.get("username") or "").lower() not in rset])
+                self.state.emit("log", {"level": "error", "msg": f"reach prospect scrape failed: {e}"})
+            scraped = len(read_reach_todo()) - before
+            if not vetted and scraped <= 0:
+                break   # nothing left to vet and no fresh prospects → done this pass
         write_reach_pool(pool)
 
     def _reach_liked_set(self) -> set:
