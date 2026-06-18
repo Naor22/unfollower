@@ -2587,28 +2587,33 @@ class Bot:
     # (… followers / following / posts). Abbreviated text + a regex are the fallbacks.
     _COUNTS_JS = """
     () => {
-      const h = document.querySelector("header") || document.body;
+      const root = document.body || document.documentElement;
       const out = { posts: null, followers: null, following: null, _items: [] };
       const numTitle = (s) => /^[\\d.,]+\\s*[kmb]?$/i.test((s || "").trim());
-      const classify = (n) => {
+      // Which count this title belongs to, from the label text of a nearby ancestor.
+      // Climb a few levels but bail once the text is too broad (whole-page).
+      const labelOf = (n) => {
         let el = n.parentElement;
-        for (let i = 0; i < 3 && el; i++, el = el.parentElement) {
-          const t = (el.innerText || "").toLowerCase();
+        for (let i = 0; i < 4 && el; i++, el = el.parentElement) {
+          const t = (el.textContent || "").toLowerCase();
+          if (t.length > 80) break;
           if (t.includes("follower"))  return "followers";
           if (t.includes("following")) return "following";
           if (t.includes("post"))      return "posts";
         }
         return null;
       };
-      // 1) exact counts from numeric title tooltips, classified by nearby label
-      if (h.querySelectorAll) Array.from(h.querySelectorAll("[title]")).forEach(n => {
+      // 1) exact counts from numeric title tooltips, classified by nearby label. Searched
+      //    document-wide (the header counts come first in DOM order, so they win), since
+      //    the profile header isn't always inside a <header> element.
+      Array.from(root.querySelectorAll("[title]")).forEach(n => {
         const title = (n.getAttribute("title") || "").trim();
         if (!numTitle(title)) return;
-        const key = classify(n);
+        const key = labelOf(n);
         if (key && !out[key]) out[key] = { title };
       });
       // 2) abbreviated text fallback: short "<count> <label>" wrappers
-      if (h.querySelectorAll) Array.from(h.querySelectorAll("li, a, span, button")).forEach(el => {
+      Array.from(root.querySelectorAll("a, span, li, button")).forEach(el => {
         const txt = (el.innerText || "").trim();
         if (txt && txt.length <= 40 && /\\d/.test(txt) && /(post|follower|following)/i.test(txt))
           out._items.push(txt);
@@ -2681,6 +2686,11 @@ class Bot:
             self.state.emit("log", {"level": "warn",
                 "msg": f"account count refresh failed (could not open @{self._me}): {e}"})
             return
+        # Visibility: log what we actually read, so it's clear whether the EXACT count
+        # was extracted (e.g. 15,262) or it fell back to the abbreviated value (15,200).
+        self.state.emit("log", {"level": "info",
+            "msg": f"account counts read - followers={counts.get('followers')} "
+                   f"following={counts.get('following')} posts={counts.get('posts')}"})
         fields = {}
         if counts.get("followers") is not None:
             fields["account_followers"] = counts["followers"]
