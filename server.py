@@ -825,6 +825,27 @@ async def account_history():
     return {"points": pts}
 
 
+@app.post("/api/account/history/reset")
+async def reset_account_history():
+    """Reset follower/following growth tracking: clear the time-series and re-seed one
+    baseline point at the current count, so the Overview's 'since tracking' counter
+    (and the growth sparkline/chart) restart from now."""
+    try:
+        bot.ACCOUNT_HISTORY.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    bot_instance._last_history_write = 0   # let the next resync append a point immediately
+    stats = bot.read_account_stats()
+    f, g = stats.get("followers"), stats.get("following")
+    if f is not None and g is not None:
+        bot.append_log(bot.ACCOUNT_HISTORY,
+                       f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{f}\t{g}")
+    bot.append_event("tracking_reset")
+    return {"ok": True, "baseline": {"followers": f, "following": g}}
+
+
 @app.get("/api/system")
 async def get_system():
     """Host metrics for the System page, plus bot liveness for the watchdog UI."""

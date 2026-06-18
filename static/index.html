@@ -393,6 +393,10 @@
     .pool-head p { color: var(--muted); font-size: 12px; margin: 2px 0 0; }
     .pool-head .count-chip { margin-left: auto; flex: none; }
 
+    .mini-reset { position: absolute; top: 10px; right: 12px; z-index: 2; background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 10px; padding: 2px 8px; border-radius: 99px; cursor: pointer; }
+    .mini-reset:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+    .mini-reset:disabled { opacity: 0.5; cursor: default; }
+
     /* ---------- scraper page ---------- */
     .scr-head .scr-status { display: flex; align-items: center; gap: 12px; }
     .scr-dot { width: 11px; height: 11px; border-radius: 50%; flex: none; background: var(--muted-2); }
@@ -754,10 +758,11 @@
           <!-- Followers + growth sparkline (shown in every mode when we have counts) -->
           <template x-if="state.account_followers != null">
             <div class="stat-grid" style="margin-bottom:13px;">
-              <div class="stat accent" style="grid-column: span 2;">
+              <div class="stat accent" style="grid-column: span 2; position:relative;">
                 <div class="label">Followers</div>
                 <div class="value" x-text="fmtNum(state.account_followers)"></div>
                 <div class="sub" x-text="acctNet()"></div>
+                <button class="mini-reset" @click="resetTracking()" :disabled="trackBusy" title="Reset growth tracking — restart 'since tracking' from your current count">↺ reset</button>
                 <svg class="spark" x-show="acctSpark" viewBox="0 0 100 38" preserveAspectRatio="none"><polyline :points="acctSpark"></polyline></svg>
               </div>
               <div class="stat">
@@ -1940,6 +1945,7 @@
         scraperBusy: false,
         clearBusy: false,
         resetBusy: false,
+        trackBusy: false,
         poolModal: null,
         poolFilter: '',
         scraperLog: [],
@@ -2638,6 +2644,16 @@
           if (!p || p.length < 2) return 'tracking growth…';
           const net = p[p.length - 1] - p[0];
           return (net >= 0 ? '▲ +' : '▼ ') + net + ' since tracking';
+        },
+        async resetTracking() {
+          if (!confirm("Reset growth tracking? The 'since tracking' counter and the growth chart restart from your current follower count.")) return;
+          this.trackBusy = true;
+          try {
+            await this.fetch('/api/account/history/reset', { method: 'POST' });
+            await this.loadAccountHistory();
+            this.showToast('Growth tracking reset', 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+          finally { this.trackBusy = false; }
         },
         // Manual account re-sync (click the top-bar follower/following chip). Forces
         // a live fetch past the 5-min throttle; counts arrive over the WS state push.
