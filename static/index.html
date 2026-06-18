@@ -1976,7 +1976,10 @@
           // Keep totals (incl. "Pending to follow") live even when the bot is OFF - the
           // scraper fills the pool in a separate process (no WS event). The sidebar now
           // shows both unfollow + follow counts in every mode, so poll both lists.
-          setInterval(() => { this.refreshFollowLists(true); this.refreshLists(true); this.loadScraper(); }, 10000);
+          setInterval(() => {
+            if (document.visibilityState !== 'visible') return;   // don't poll a hidden tab
+            this.refreshFollowLists(true); this.refreshLists(true); this.loadScraper();
+          }, 10000);
           // Keep the account follower/following bar live while idle - but ONLY while
           // the dashboard tab is actually visible. Viewing your own profile is the
           // safest IG action there is, yet a perfectly regular 24/7 beat is a needless

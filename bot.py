@@ -2756,8 +2756,21 @@ class Bot:
             need = min(fc, max(1, self._day_room("follows", cfg)))
             ready = self._pool_ready(cfg)
             parts.append(f"follow {ready}/{need}")
+            # Only WAIT on the follow pool if the scraper can actually fill it. With no
+            # follow sources configured, blocking here would hang the bot forever waiting
+            # on a pool nothing feeds - so proceed and let the normal "pool empty" path
+            # surface it instead (warn once in a while so the cause is visible).
+            srcs = (cfg.get("targeting", {}) or {}).get("sources", {}) or {}
+            has_sources = any(srcs.get(k) for k in
+                              ("profiles", "hashtags", "post_likers", "post_commenters"))
             if ready < need:
-                warm = False
+                if has_sources:
+                    warm = False
+                elif time.time() - getattr(self, "_warned_no_sources", 0) > 600:
+                    self._warned_no_sources = time.time()
+                    self.state.emit("log", {"level": "warn",
+                        "msg": "scraper is on but no follow sources are configured (Config → "
+                               "Targeting → Sources) - the follow pool can't be filled"})
         if self._reach_harvest_on(cfg):
             need = self._reach_likes_left(cfg)
             ready = self._reach_pool_ready()
@@ -5233,12 +5246,13 @@ class Bot:
             if result == "ok" or result == "not_following" or result == "private_or_missing" \
                     or result.startswith("no_button_no_posts"):
                 # Either we unfollowed them, or there's nothing left to unfollow -
-                # done either way, so record it and stop re-checking.
+                # resolved either way, so record it (done-set) and stop re-checking.
                 append_log(churn_log, f"{ts}\t{u}")
                 append_log(outcomes_log, f"{ts}\t{u}\t{src}\t{'1' if follows_back else '0'}")
-                new_count = self.state.snapshot()["churn_unfollowed_count"] + 1
-                self.state.emit("churn_unfollowed", {"timestamp": ts, "username": u})
                 if result == "ok":
+                    # A REAL unfollow happened - count it + feed the live churn gauge.
+                    new_count = self.state.snapshot()["churn_unfollowed_count"] + 1
+                    self.state.emit("churn_unfollowed", {"timestamp": ts, "username": u})
                     self.state.update(churn_unfollowed_count=new_count,
                                       last_message=f"churned @{u} (didn't follow back)")
                     processed += 1
@@ -5258,8 +5272,8 @@ class Bot:
                         self.state.update(phase_detail=f"long break {pause:.0f}s")
                         self._interruptible_sleep(pause)
                 else:
-                    self.state.update(churn_unfollowed_count=new_count,
-                                      last_message=f"@{u} already not followed (resolved)")
+                    # Nothing was actually unfollowed - don't report it as a churn.
+                    self.state.update(last_message=f"@{u} already not followed (resolved)")
                     self._jitter(1.0, 3.0)
             elif result.startswith("rate_limited"):
                 consecutive_errors = 0
