@@ -2630,10 +2630,22 @@ class Bot:
         then a regex over the header/main text."""
         counts = {"posts": None, "followers": None, "following": None}
 
-        try:
-            data = page.evaluate(self._COUNTS_JS) or {}
-        except Exception:
-            data = {}
+        # Poll briefly: IG renders the header counts (and the exact-value title tooltip)
+        # a moment AFTER domcontentloaded, so a single immediate read can miss it and
+        # fall back to the abbreviated number. Re-evaluate until the exact followers
+        # title appears (or ~6s), so we capture '15,262' not '15.2K'.
+        data = {}
+        for _ in range(6):
+            try:
+                data = page.evaluate(self._COUNTS_JS) or {}
+            except Exception:
+                data = {}
+            f = data.get("followers")
+            if isinstance(f, dict) and f.get("title"):
+                break
+            if self._stop_event.is_set():
+                break
+            self._interruptible_sleep(1.0)
 
         # Exact value from the title tooltips.
         for key in ("posts", "followers", "following"):
