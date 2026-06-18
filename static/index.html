@@ -2811,11 +2811,13 @@
         },
 
         async resetDaily() {
-          if (!confirm("Reset today's follow / unfollow / like counts to zero so the bot can run a full day again?")) return;
+          if (!confirm("Reset today's follow / unfollow / like counts to zero and resume the bot for a full day?")) return;
           this.resetBusy = true;
           try {
-            await this.fetch('/api/daily/reset', { method: 'POST' });
-            this.showToast('Daily tasks reset — the bot can run a full day again', 'success');
+            const j = await this.fetch('/api/daily/reset', { method: 'POST' });
+            this.showToast(j.bot_started ? 'Daily tasks reset — bot started'
+                                         : (j.running ? 'Daily tasks reset — bot resuming shortly'
+                                                      : 'Daily tasks reset'), 'success');
           } catch (e) { this.showToast(e.message, 'error'); }
           finally { this.resetBusy = false; }
         },

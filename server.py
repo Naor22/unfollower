@@ -1171,8 +1171,12 @@ async def scraper_stop():
 @app.post("/api/daily/reset")
 async def reset_daily():
     """Reset today's action ledger (follow/unfollow/like counts + rest/block tallies)
-    so the bot can run a fresh full day's caps again. A bot currently sleeping on
-    'daily caps reached' re-checks within ~a minute and resumes on its own."""
+    so the bot can run a fresh full day's caps again, and resume the bot:
+      - if it's RUNNING but sleeping on 'daily caps reached', it re-checks within ~a
+        minute and resumes on its own (then the scraper yields the Pi to it);
+      - if it's STOPPED (the scraper had taken over the dead time), reset alone can't
+        relaunch the exited run loop, so we start it here - which is what "run again"
+        means."""
     try:
         bot.DAILY_COUNTS.unlink()
     except FileNotFoundError:
@@ -1185,7 +1189,15 @@ async def reset_daily():
     except Exception:
         pass
     bot.append_event("daily_reset")
-    return {"ok": True}
+    started = False
+    if not bot_instance.is_running:
+        try:
+            started = bool(bot_instance.start())
+            if started:
+                _maybe_autostart_scraper()   # mirror /api/start (scraper yields once bot acts)
+        except Exception:
+            pass
+    return {"ok": True, "bot_started": started, "running": bot_instance.is_running}
 
 
 # ---------- deploy (browser file upload) ----------
