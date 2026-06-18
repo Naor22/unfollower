@@ -397,6 +397,8 @@
     .mini-reset:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
     .mini-reset:disabled { opacity: 0.5; cursor: default; }
 
+    .logbox { max-height: 380px; overflow: auto; background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.5; color: var(--text-soft, var(--muted)); white-space: pre-wrap; word-break: break-word; margin: 0; }
+
     /* ---------- scraper page ---------- */
     .scr-head .scr-status { display: flex; align-items: center; gap: 12px; }
     .scr-dot { width: 11px; height: 11px; border-radius: 50%; flex: none; background: var(--muted-2); }
@@ -1464,6 +1466,16 @@
           </div>
 
           <div class="card" style="margin-top:18px;">
+            <div class="card-title">Logs <span class="pill" x-text="logsSource === 'journal' ? 'service journal' : 'captured events'"></span>
+              <div style="flex:1"></div>
+              <button class="ghost sm" @click="loadLogs()" :disabled="logsBusy">Refresh</button>
+            </div>
+            <p class="hint" style="margin-bottom:10px;">Recent service output — for debugging freezes/crashes: what the bot was doing before it went silent, the watchdog restart, and any errors. Newest at the bottom.</p>
+            <p class="hint" x-show="logsNote" style="color:var(--warning);margin-bottom:10px;" x-text="logsNote"></p>
+            <pre class="logbox" x-text="logsText || 'Loading…'"></pre>
+          </div>
+
+          <div class="card" style="margin-top:18px;">
             <div class="card-title">Deploy <span class="pill">pull latest from GitHub</span>
               <div style="flex:1"></div>
               <button class="ghost sm" @click="loadDeployStatus()" :disabled="deployBusy">Check</button>
@@ -1956,6 +1968,10 @@
         clearBusy: false,
         resetBusy: false,
         trackBusy: false,
+        logsText: '',
+        logsSource: '',
+        logsNote: '',
+        logsBusy: false,
         poolModal: null,
         poolFilter: '',
         scraperLog: [],
@@ -2044,7 +2060,7 @@
           this.tab = tab; this.sidebarOpen = false;
           if (tab === 'discovered') this.loadDiscovered();
           if (tab === 'analytics') this.loadAnalytics();
-          if (tab === 'system') { this.startSysPolling(); if (!this.deployGit) this.loadDeployStatus(); } else this.stopSysPolling();
+          if (tab === 'system') { this.startSysPolling(); this.loadLogs(); if (!this.deployGit) this.loadDeployStatus(); } else this.stopSysPolling();
           if (tab === 'scraper') this.startScraperPolling(); else this.stopScraperPolling();
         },
 
@@ -2052,6 +2068,18 @@
           this.loadSystem();
           if (this._sysTimer) clearInterval(this._sysTimer);
           this._sysTimer = setInterval(() => this.loadSystem(), 3000);
+        },
+
+        async loadLogs() {
+          this.logsBusy = true;
+          try {
+            const j = await this.fetch('/api/logs');
+            this.logsText = j.text || '';
+            this.logsSource = j.source || '';
+            this.logsNote = j.note || '';
+            this.$nextTick(() => { const el = document.querySelector('.logbox'); if (el) el.scrollTop = el.scrollHeight; });
+          } catch (e) { this.logsText = 'Could not load logs: ' + e.message; }
+          finally { this.logsBusy = false; }
         },
 
         startScraperPolling() {

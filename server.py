@@ -24,7 +24,10 @@ ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
 ENV_PATH = ROOT / ".env"
 
-state_manager = bot.StateManager()
+# log_stdout=True mirrors the bot's emitted log lines to stdout so they land in the
+# systemd journal (journalctl -u unfollower) - otherwise only print()/uvicorn/tracebacks
+# would, leaving the journal too sparse to debug a freeze.
+state_manager = bot.StateManager(log_stdout=True)
 bot_instance = bot.Bot(state_manager)
 
 
@@ -863,6 +866,49 @@ async def get_system():
     s["watchdog_threshold"] = float(wd.get("stuck_after_seconds", 600))
     s["autostart"] = bool((bot.load_config().get("server", {}) or {}).get("autostart"))
     return s
+
+
+@app.get("/api/logs")
+async def get_logs(lines: int = 400):
+    """Recent service logs for debugging freezes/restarts. Prefers the systemd journal
+    (full process output: last activity before a hang, the watchdog restart, tracebacks);
+    falls back to the persisted lifecycle + bot log events when the journal isn't readable
+    (non-Linux, or no journal permission)."""
+    n = max(20, min(int(lines or 400), 2000))
+    if sys.platform == "linux":
+        service = (bot.load_config().get("server", {}) or {}).get("service_name", "unfollower")
+        base = ["journalctl", "-u", service, "-n", str(n), "--no-pager", "-o", "short-iso"]
+        # Try without sudo (works if the user is in the adm/systemd-journal group), then
+        # with the same passwordless sudo the restart uses.
+        for cmd in (base, ["sudo", "-n"] + base):
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                if r.returncode == 0 and r.stdout.strip():
+                    return {"ok": True, "source": "journal", "service": service,
+                            "text": r.stdout.strip()}
+            except Exception:
+                pass
+
+    # Fallback: persisted lifecycle events + the bot's recent emitted log lines.
+    parts = []
+    ev_rows = bot.read_runtime_events()[-80:]
+    if ev_rows:
+        parts.append("── lifecycle (start / stop / restart / error / checkpoint) ──")
+        parts += [f"{e['timestamp']}  {e['kind']}  {e.get('detail', '')}".rstrip() for e in ev_rows]
+    logs = [ev for ev in state_manager.recent_events() if ev.get("type") == "log"][-250:]
+    if logs:
+        parts.append("")
+        parts.append("── recent bot log ──")
+        for ev in logs:
+            d = ev.get("data") or {}
+            parts.append(f"{d.get('_time', '')}  {(d.get('level') or 'info').upper()}  "
+                         f"{d.get('msg', '')}".rstrip())
+    text = "\n".join(parts) or "No logs captured yet."
+    note = ("Showing captured events. For the FULL service journal (incl. tracebacks), give "
+            "the service user journal access: add a passwordless-sudo line for journalctl "
+            "(see DEPLOY.md) or add the user to the 'systemd-journal' group."
+            if sys.platform == "linux" else "Full journal logs are only on the Pi deployment.")
+    return {"ok": True, "source": "events", "text": text, "note": note}
 
 
 def _profile_rows(entries):

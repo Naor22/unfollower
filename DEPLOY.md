@@ -178,6 +178,26 @@ Notes:
   bot stopped (it warns instead of restarting in that case).
 - After a restart the dashboard drops for a few seconds, then reconnects on its own.
 
+### System → Logs viewer (optional: full service journal)
+
+The dashboard's **System → Logs** card works out of the box (it falls back to the
+captured lifecycle + bot log events). For the **full systemd journal** (uvicorn,
+tracebacks, the complete pre-freeze output), the service user needs journal read access.
+Simplest — add the user to the journal group (no sudoers needed), then restart:
+
+```bash
+sudo usermod -aG systemd-journal naor223     # or the 'adm' group
+sudo systemctl restart unfollower
+```
+
+Alternatively, a passwordless-sudo line for journalctl (the viewer tries `sudo -n` too):
+
+```bash
+echo 'naor223 ALL=(root) NOPASSWD: /usr/bin/journalctl -u unfollower *' \
+  | sudo tee /etc/sudoers.d/unfollower-logs
+sudo chmod 440 /etc/sudoers.d/unfollower-logs
+```
+
 ## 8b. Scraper + filter service (separate process, burner account)
 
 The scraping + candidate-filtering can run as a **separate service** on a **second
