@@ -2561,30 +2561,57 @@ class Bot:
     # each with the number and a label (Posts / Followers / Following). The
     # number is often abbreviated in visible text ('1,234', '12.3k') but the
     # exact value is in a child span's title attribute, so we capture both.
-    _COUNTS_JS = (
-        '() => { const h = document.querySelector("header") || document.body;'
-        ' return Array.from(h.querySelectorAll("li")).map(li => {'
-        '   const t = li.querySelector("span[title]");'
-        '   return { text: li.innerText || "", title: t ? t.getAttribute("title") : "" };'
-        ' }); }'
-    )
+    # IG shows the follower/following counts abbreviated ("15.2K") but keeps the EXACT
+    # value in a `title` tooltip on a child span ("15,234"). The counts are wrapped in
+    # stable links (/<user>/followers/ and /following/), so target those and read the
+    # title; posts (no link) + any fallback come from the header <li> items.
+    _COUNTS_JS = """
+    () => {
+      const h = document.querySelector("header") || document.body;
+      const exact = (el) => {
+        if (!el) return "";
+        const ns = [];
+        if (el.matches && el.matches("[title]")) ns.push(el);
+        if (el.querySelectorAll) el.querySelectorAll("[title]").forEach(n => ns.push(n));
+        for (const n of ns) {
+          const t = (n.getAttribute("title") || "").trim();
+          if (/[0-9]/.test(t)) return t;
+        }
+        return "";
+      };
+      const link = (s) => h.querySelector('a[href$="/' + s + '/"]')
+                       || h.querySelector('a[href*="/' + s + '/"]');
+      const lc = (s) => { const a = link(s);
+        return a ? { text: (a.innerText || "").trim(), title: exact(a) } : null; };
+      const items = [];
+      if (h.querySelectorAll) Array.from(h.querySelectorAll("li")).forEach(li =>
+        items.push({ text: (li.innerText || "").trim(), title: exact(li) }));
+      return { followers: lc("followers"), following: lc("following"), items: items };
+    }
+    """
 
     def _read_profile_counts(self, page) -> dict:
         """Return {'posts', 'followers', 'following'} as ints (or None each).
 
-        Two strategies: (1) structured <li> items, preferring the exact value in
-        a span[title] (e.g. '1,234,567' behind the abbreviated '1.2M'); (2) a
-        regex over the header/main text as a fallback, since IG reshuffles the
-        header markup often but the visible 'X posts / Y followers / Z following'
-        wording is stable."""
+        Prefers the EXACT count from the title tooltip (e.g. '15,234') over the
+        abbreviated visible text ('15.2K'): followers/following via their stable
+        count links, posts via the header <li> items. Falls back to a regex over the
+        header/main text (abbreviated) only when nothing structured is found."""
         counts = {"posts": None, "followers": None, "following": None}
 
-        # Strategy 1: structured list items (gives the exact follower count).
         try:
-            items = page.evaluate(self._COUNTS_JS)
+            data = page.evaluate(self._COUNTS_JS) or {}
         except Exception:
-            items = []
-        for it in items or []:
+            data = {}
+
+        # Followers / following from their links - title (exact) first, text (abbrev) fallback.
+        for key in ("followers", "following"):
+            d = data.get(key)
+            if isinstance(d, dict):
+                counts[key] = parse_count(d.get("title") or "") or parse_count(d.get("text") or "")
+
+        # Posts (and any follower/following the links missed) from the <li> items.
+        for it in data.get("items") or []:
             low = (it.get("text") or "").lower()
             if "post" in low:
                 key = "posts"
@@ -2594,9 +2621,8 @@ class Bot:
                 key = "following"
             else:
                 continue
-            if counts[key] is not None:
-                continue
-            counts[key] = parse_count(it.get("title") or "") or parse_count(it.get("text") or "")
+            if counts[key] is None:
+                counts[key] = parse_count(it.get("title") or "") or parse_count(it.get("text") or "")
 
         # Strategy 2: regex over the header text for anything still missing.
         if any(v is None for v in counts.values()):
