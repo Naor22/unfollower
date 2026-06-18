@@ -4246,6 +4246,8 @@ class Bot:
                 continue   # transient - leave in todo, retry next pass
             resolved.append(u)        # vetted (kept or rejected) → drop from todo
             if reason is not None:
+                self.state.emit("log", {"level": "info",
+                    "msg": f"reach @{u} → reject ({reason})"})
                 continue              # private / filtered out
             # _filter_one just loaded this profile - grab the recent post link from that
             # same page (no re-navigation). Fall back to a fresh load only if the grid
@@ -4258,12 +4260,16 @@ class Bot:
             except Exception:
                 url = None
             if not url or url in have_urls or url in liked:
+                self.state.emit("log", {"level": "info",
+                    "msg": f"reach @{u} → no usable post"})
                 continue
             have_urls.add(url)
             have_users.add(u)
             pool.append({"url": url, "username": u,
                          "source": c.get("source", "") or "reach", "added_at": int(time.time())})
             write_reach_pool(pool)    # sole writer, atomic
+            self.state.emit("log", {"level": "info",
+                "msg": f"reach [{len(pool)}/{target}] @{u} → KEEP (post linked)"})
             self.state.update(
                 reach_scraped=self.state.snapshot().get("reach_scraped", 0) + 1,
                 reach_pool=len(pool))
