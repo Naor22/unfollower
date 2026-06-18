@@ -4968,9 +4968,15 @@ class Bot:
 
         while not self._stop_event.is_set():
             progressed = False
+            # Once today's UNFOLLOW cap is hit there's no unfollow work left today, so
+            # skip the unfollow/trim batches AND drop the follow ratio gate - otherwise
+            # follows stay throttled to their ratio share of unfollows that can no longer
+            # happen, dripping ~1 follow per cycle and repeatedly yielding to the scraper.
+            # With the gate dropped, follows run straight to their own daily cap.
+            unf_capped = self._day_room("unfollows", cfg) <= 0
 
             # --- unfollow batch: aged-review first ---
-            if not u_dead and u_used < u_cap:
+            if not u_dead and u_used < u_cap and not unf_capped:
                 out = self._process_churn_unfollows(page, cfg, max_actions=unf_per)
                 if out in ("stopped", "block", "checkpoint"):
                     return out
@@ -4978,20 +4984,21 @@ class Bot:
                 u_dead = (out == "exhausted")
                 progressed = progressed or not u_dead
             # --- unfollow batch: list-trim (shrink the existing following list) ---
-            if not t_dead and t_used < t_cap:
+            if not t_dead and t_used < t_cap and not unf_capped:
                 out = self._process_list_trim(page, cfg, max_actions=unf_per)
                 if out in ("stopped", "block", "checkpoint"):
                     return out
                 t_used += unf_per
                 t_dead = (out == "exhausted")
                 progressed = progressed or not t_dead
-            # --- follow batch (ratio-gated) ---
+            # --- follow batch (ratio-gated while unfollows still have work today) ---
             if not f_dead and f_used < f_cap:
-                # While any unfollow source still has accounts, hold follows to their
-                # ratio share of REAL unfollows so a refilled follow pool can't balloon
-                # the following count ahead of churn (the overnight follow-only drift).
-                # A small starter allowance (fol_per) lets the first follows run at u=0.
-                unfollow_supply = not (u_dead and t_dead)
+                # While any unfollow source still has accounts AND the unfollow cap isn't
+                # spent, hold follows to their ratio share of REAL unfollows so a refilled
+                # follow pool can't balloon the following count ahead of churn (the
+                # overnight follow-only drift). A small starter allowance (fol_per) lets
+                # the first follows run at u=0. Once unfollows are capped, the gate drops.
+                unfollow_supply = (not (u_dead and t_dead)) and not unf_capped
                 snap = self.state.snapshot()
                 real_f = (snap.get("followed_count", 0) or 0) - base_f
                 real_u = ((snap.get("churn_unfollowed_count", 0) or 0)
@@ -5010,8 +5017,8 @@ class Bot:
                     f_dead = (out == "exhausted")
                     progressed = progressed or not f_dead
 
-            u_busy = (not u_dead and u_used < u_cap)
-            t_busy = (not t_dead and t_used < t_cap)
+            u_busy = (not u_dead and u_used < u_cap and not unf_capped)
+            t_busy = (not t_dead and t_used < t_cap and not unf_capped)
             f_busy = (not f_dead and f_used < f_cap)
             if not (u_busy or t_busy or f_busy):
                 return "exhausted"   # every source capped or drained
