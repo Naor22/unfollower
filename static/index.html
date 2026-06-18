@@ -1936,7 +1936,7 @@
         poolModal: null,
         poolFilter: '',
         scraperLog: [],
-        dispScraper: { follow_backlog: 0, follow_pool: 0, reach_backlog: 0, reach_pool: 0, rejected: 0, checked: 0 },
+        dispScraper: { follow_backlog: 0, follow_pool: 0, reach_backlog: 0, reach_pool: 0, rejected: 0, checked: 0, follow_high: 0, reach_high: 0 },
         cpuHist: [],
         memHist: [],
         tempHist: [],
@@ -2048,7 +2048,7 @@
         // Animate the pool numbers toward their new values so updates feel smooth.
         _tweenScraper() {
           if (!this.scraper) return;
-          ['follow_backlog', 'follow_pool', 'reach_backlog', 'reach_pool', 'rejected', 'checked'].forEach(k => {
+          ['follow_backlog', 'follow_pool', 'reach_backlog', 'reach_pool', 'rejected', 'checked', 'follow_high', 'reach_high'].forEach(k => {
             const target = this.scraper[k] != null ? this.scraper[k] : (this.dispScraper[k] || 0);
             this._tweenNum(this.dispScraper, k, target);
           });
