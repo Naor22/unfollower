@@ -2740,6 +2740,8 @@ class Bot:
                         or (srcs.get("post_commenters") or []) or (srcs.get("post_likers") or []))
         return bool(self._reach_tags(cfg))
 
+    _REACH_WARM_STALL = 300.0   # secs to wait for reach to keep filling before proceeding anyway
+
     def _pools_warm(self, cfg, mode):
         """Unified pool gate: (warm, detail). The bot stays fully idle (browser closed)
         until EVERY pool it will consume holds at least its low-water, so the scraper
@@ -2781,14 +2783,23 @@ class Bot:
             need = self._reach_likes_left(cfg)
             ready = self._reach_pool_ready()
             parts.append(f"reach {ready}/{need}")
-            # Reach is SUPPLEMENTARY - never let it deadlock the bot's main work. Only
-            # wait on it while the scraper is ACTIVELY filling it; once the scraper goes
-            # idle (e.g. most prospects fail the filters so reach plateaus below low-water,
-            # backlog drained), proceed with whatever reach links exist - the bot likes
-            # those and just skips reach when the pool runs dry. The scraper keeps topping
-            # reach up during the bot's dead time.
-            if ready < need and self._scraper_active():
-                warm = False
+            # Wait for reach to reach low-water like follow does - but never DEADLOCK.
+            # Keep waiting while the pool is still making progress (the scraper is filling
+            # it); only give up if it's STALLED (no growth) for a while, which means the
+            # scraper genuinely can't fill it (too few public/posting prospects, or it's
+            # down). Tracking progress (not just "scraper idle right now") avoids both the
+            # old premature-proceed on a transient idle AND a permanent hang.
+            if ready >= need:
+                self._reach_warm = None                 # satisfied → reset the stall clock
+            else:
+                now = time.monotonic()
+                w = getattr(self, "_reach_warm", None)
+                if w is None or ready != w[1]:
+                    w = (now, ready)                     # first sight / pool changed → (re)start clock
+                    self._reach_warm = w
+                if now - w[0] <= self._REACH_WARM_STALL:
+                    warm = False                         # still filling → keep waiting
+                # else: stalled past _REACH_WARM_STALL → proceed (don't deadlock)
         return warm, ", ".join(parts)
 
     def _scraper_phase(self) -> str:
