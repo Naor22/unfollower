@@ -3052,6 +3052,20 @@ class Bot:
                                                 "msg": "burner not logged in - run scraper_login.py"})
                         disconnect()
                         return None
+                    # Health check: a checkpointed / suspended / disabled burner stays
+                    # "logged in" (cookies present) but every navigation redirects to a
+                    # challenge, so scrapes return nothing and the scraper would idle
+                    # SILENTLY. Surface it so the dashboard says WHY reach/follow won't fill.
+                    if self._checkpoint_detected(pg):
+                        self._write_scraper_status(
+                            error="burner account is checkpointed / blocked by Instagram - open the "
+                                  "burner Chrome and clear the challenge, or swap the burner account. "
+                                  "Scraping is paused until then.")
+                        self.state.emit("log", {"level": "error",
+                            "msg": "burner checkpointed/blocked - can't harvest (clear the challenge "
+                                   "on the burner or swap accounts)"})
+                        disconnect()
+                        return None
                     return pg
 
                 def disconnect():
