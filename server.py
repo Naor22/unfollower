@@ -1118,11 +1118,26 @@ async def scraper_status():
     return data
 
 
+def _classify_log(msg: str) -> str:
+    """Tag a scraper log line as 'reach' / 'follow' / '' (general) for the feed badge.
+    Reach lines always say 'reach'; follow vetting lines carry the '→ KEEP/reject'
+    arrow or vet/scrape/filter wording. Anything else (startup, login) stays untagged."""
+    m = (msg or "").lower()
+    if "reach" in m:
+        return "reach"
+    if any(k in m for k in ("→", "vetting", "vetted", "candidate", "scrap", "filter @")):
+        return "follow"
+    return ""
+
+
 @app.get("/api/scraper/log")
 async def scraper_log():
-    """Recent scraper log lines for the live feed (newest last). Written by the
-    scraper process to its own ring file, so it works cross-process."""
-    return {"events": bot.read_scraper_activity()}
+    """Recent scraper log lines for the live feed (newest last), each tagged with the
+    pipeline it belongs to. Written by the scraper process to its own ring file."""
+    out = []
+    for e in bot.read_scraper_activity():
+        out.append({**e, "pool": _classify_log((e.get("data") or {}).get("msg", ""))})
+    return {"events": out}
 
 
 @app.post("/api/scraper/start")

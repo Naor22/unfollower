@@ -431,6 +431,9 @@
     .scr-log-row { display: flex; gap: 10px; padding: 3px 6px; border-radius: 5px; line-height: 1.4; }
     .scr-log-row:hover { background: var(--surface-2); }
     .scr-log-row .slt { color: var(--muted-2); flex: none; font-variant-numeric: tabular-nums; }
+    .scr-log-row .slp { flex: none; font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; padding: 1px 6px; border-radius: 99px; align-self: center; }
+    .scr-log-row .slp.follow { background: rgba(45,212,191,0.15); color: var(--accent-2); }
+    .scr-log-row .slp.reach { background: var(--warning-bg); color: var(--warning); }
     .scr-log-row .slm { color: var(--text-soft, var(--muted)); word-break: break-word; }
     .scr-log-row.error .slm { color: var(--danger); }
     .scr-log-row.warn .slm { color: var(--warning); }
@@ -1348,6 +1351,7 @@
               <template x-for="ev in scraperLogView()" :key="ev.k">
                 <div class="scr-log-row" :class="ev.level">
                   <span class="slt" x-text="ev.time"></span>
+                  <span class="slp" :class="ev.pool" x-show="ev.pool" x-text="ev.pool"></span>
                   <span class="slm" x-text="ev.msg"></span>
                 </div>
               </template>
@@ -2085,7 +2089,8 @@
         scraperLogView() {
           return (this.scraperLog || []).slice().reverse().slice(0, 80).map((e, i) => {
             const d = e.data || {};
-            return { k: (d._time || '') + '·' + i, time: d._time || '', msg: d.msg || '', level: d.level || 'info' };
+            return { k: (d._time || '') + '·' + i, time: d._time || '', msg: d.msg || '',
+                     level: d.level || 'info', pool: e.pool || '' };
           });
         },
         poolMeta() {
