@@ -905,6 +905,7 @@ class Bot:
         self._warmed = False    # one-time external-scraper pool warm-up gate
         self._actions_since_resync = 0  # drives periodic account-count re-sync
         self._force_account_refresh = False  # set by a dashboard force-refresh while running
+        self._likers_blocked_until = 0.0  # pause profile-liker scraping until this ts (IG gated)
         self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
         self._recent_reach_tags = collections.deque(maxlen=20)  # last reach tags liked, for reach diversity
         self._reach_consumed = set()    # reach URLs picked this run (pre-log de-dupe guard)
@@ -1674,6 +1675,50 @@ class Bot:
                 break
         return out[:cap]
 
+    _LIKERS_COOLDOWN = 3600.0   # secs to pause liker scraping after IG hides a profile's likers
+
+    def _scrape_profile_likers(self, page, profile: str, cap: int = 600,
+                               per_post: int = 60, on_collect=None) -> list[str]:
+        """Return the LIKERS on an influencer profile's recent posts - active users who
+        engaged with that account. Mirrors _scrape_profile_commenters but calls
+        _scrape_likers per post. IG HIDES liker lists on big/clinic accounts (then
+        _scrape_likers returns []); if NOT ONE sampled post exposes its likers we set a
+        global cooldown (_likers_blocked_until) and the task builder skips likers until it
+        elapses - they're plentiful from other sources, no point wasting passes."""
+        profile = (profile or "").strip().lstrip("@").lower()
+        if not profile:
+            return []
+        self.state.update(status="scraping", phase_detail=f"opening @{profile}'s posts (likers)")
+        posts = self._collect_post_links(page, f"https://www.instagram.com/{profile}/", 12)
+        out: list[str] = []
+        seen: set[str] = set()
+        my = (os.getenv("IG_USERNAME") or "").lower()
+        any_exposed = False
+        for url in posts:
+            if self._stop_event.is_set() or len(out) >= cap:
+                break
+            try:
+                people = self._scrape_likers(page, url, per_post)
+            except Exception:
+                people = []
+            if people:
+                any_exposed = True
+            for u in people:
+                if u == my or u in seen:
+                    continue
+                seen.add(u)
+                out.append(u)
+            if on_collect and on_collect(out):   # ingest + stop-check per post
+                break
+        # Shield: the profile had posts but IG exposed likers on NONE of them → gated.
+        # Pause ALL liker scraping for a while (the task builder checks the timestamp).
+        if posts and not any_exposed:
+            self._likers_blocked_until = time.time() + self._LIKERS_COOLDOWN
+            self.state.emit("log", {"level": "info",
+                "msg": f"likers hidden for @{profile} - pausing liker scraping for "
+                       f"{int(self._LIKERS_COOLDOWN // 60)}m"})
+        return out[:cap]
+
     def _scrape_candidates(self, page, cfg, pool_read=None, pool_write=None,
                            extra_exclude=None, on_progress=None, status_cb=None,
                            done_set=None, pool_min=None) -> int:
@@ -1778,12 +1823,15 @@ class Bot:
             return hook, state
 
         tasks = []   # each: {"label","desc","scrape","exhausted"}
+        # Liker scraping is paused after IG hides a profile's likers (see the shield in
+        # _scrape_profile_likers) - skip building those tasks until the cooldown elapses.
+        likers_ok = time.time() >= getattr(self, "_likers_blocked_until", 0)
         for prof in sources.get("profiles", []) or []:
             prof = _norm_profile(prof)
             if prof:
-                # Each influencer profile auto-feeds TWO seeds: its post COMMENTERS
-                # (active users - prioritized at follow time) AND its followers
-                # (backfill). The user adds the handle once; the scraper does both.
+                # Each influencer profile auto-feeds its post COMMENTERS (active, high-
+                # intent) + its FOLLOWERS (backfill) + its post LIKERS (active; often
+                # gated on big accounts → shielded). The user adds the handle once.
                 tasks.append({"label": f"commenters:@{prof}", "desc": f"@{prof} post commenters",
                               "scrape": (lambda hook, p=prof:
                                          self._scrape_profile_commenters(page, p, per_cap, on_collect=hook)),
@@ -1792,6 +1840,11 @@ class Bot:
                               "scrape": (lambda hook, p=prof:
                                          self._scrape_list(page, p, "followers", per_cap, on_collect=hook)),
                               "exhausted": False})
+                if likers_ok:
+                    tasks.append({"label": f"likers:@{prof}", "desc": f"@{prof} post likers",
+                                  "scrape": (lambda hook, p=prof:
+                                             self._scrape_profile_likers(page, p, per_cap, on_collect=hook)),
+                                  "exhausted": False})
         for post in sources.get("post_likers", []) or []:
             post = _norm_post(post)
             if post:
