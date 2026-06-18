@@ -1802,6 +1802,20 @@ class Bot:
         fair = max(10, pool_min // n_seeds)
         chunk_box[0] = min(chunk_box[0], fair)
 
+        # Surface the source composition so an empty/short sources list is obvious (e.g.
+        # only hashtags - which IG gates - because the profiles got cleared).
+        n_prof = sum(1 for p in (sources.get("profiles") or []) if _norm_profile(p))
+        n_pl = sum(1 for p in (sources.get("post_likers") or []) if _norm_post(p))
+        n_pc = sum(1 for p in (sources.get("post_commenters") or []) if _norm_post(p))
+        n_tag = sum(1 for t in (sources.get("hashtags") or []) if _norm_tag(t))
+        if not tasks:
+            self.state.emit("log", {"level": "warn",
+                "msg": "scrape: NO sources configured (Config → Targeting → Sources) - nothing to fill the pool"})
+        else:
+            self.state.emit("log", {"level": "info",
+                "msg": f"scrape sweep: {n_prof} profiles, {n_pc} post-commenters, "
+                       f"{n_pl} post-likers, {n_tag} hashtags"})
+
         # Round-robin across seeds: each visit pulls up to the fair chunk then rotates.
         # A seed that handed a full chunk MAY have more, so it's revisited next round
         # (the helper re-scrolls; dedup skips what we already took); one that gave less
@@ -2563,46 +2577,50 @@ class Bot:
 
     # --- follow side ---
 
-    # Read the three profile-header stats. IG renders them as a <ul> of <li>,
-    # each with the number and a label (Posts / Followers / Following). The
-    # number is often abbreviated in visible text ('1,234', '12.3k') but the
-    # exact value is in a child span's title attribute, so we capture both.
-    # IG shows the follower/following counts abbreviated ("15.2K") but keeps the EXACT
-    # value in a `title` tooltip on a child span ("15,234"). The counts are wrapped in
-    # stable links (/<user>/followers/ and /following/), so target those and read the
-    # title; posts (no link) + any fallback come from the header <li> items.
+    # Read the three profile-header stats. IG shows the numbers ABBREVIATED in visible
+    # text ("15.2K") but keeps the EXACT value in a child span's `title` attribute
+    # (e.g. <span title="15,262">). On the OWN profile the count is NOT an <a href>
+    # (clicking opens a modal, no URL), so we can't target a link - instead we find
+    # every numeric `title` node and classify it by the label text of a nearby ancestor
+    # (… followers / following / posts). Abbreviated text + a regex are the fallbacks.
     _COUNTS_JS = """
     () => {
       const h = document.querySelector("header") || document.body;
-      const exact = (el) => {
-        if (!el) return "";
-        const ns = [];
-        if (el.matches && el.matches("[title]")) ns.push(el);
-        if (el.querySelectorAll) el.querySelectorAll("[title]").forEach(n => ns.push(n));
-        for (const n of ns) {
-          const t = (n.getAttribute("title") || "").trim();
-          if (/[0-9]/.test(t)) return t;
+      const out = { posts: null, followers: null, following: null, _items: [] };
+      const numTitle = (s) => /^[\\d.,]+\\s*[kmb]?$/i.test((s || "").trim());
+      const classify = (n) => {
+        let el = n.parentElement;
+        for (let i = 0; i < 3 && el; i++, el = el.parentElement) {
+          const t = (el.innerText || "").toLowerCase();
+          if (t.includes("follower"))  return "followers";
+          if (t.includes("following")) return "following";
+          if (t.includes("post"))      return "posts";
         }
-        return "";
+        return null;
       };
-      const link = (s) => h.querySelector('a[href$="/' + s + '/"]')
-                       || h.querySelector('a[href*="/' + s + '/"]');
-      const lc = (s) => { const a = link(s);
-        return a ? { text: (a.innerText || "").trim(), title: exact(a) } : null; };
-      const items = [];
-      if (h.querySelectorAll) Array.from(h.querySelectorAll("li")).forEach(li =>
-        items.push({ text: (li.innerText || "").trim(), title: exact(li) }));
-      return { followers: lc("followers"), following: lc("following"), items: items };
+      // 1) exact counts from numeric title tooltips, classified by nearby label
+      if (h.querySelectorAll) Array.from(h.querySelectorAll("[title]")).forEach(n => {
+        const title = (n.getAttribute("title") || "").trim();
+        if (!numTitle(title)) return;
+        const key = classify(n);
+        if (key && !out[key]) out[key] = { title };
+      });
+      // 2) abbreviated text fallback: short "<count> <label>" wrappers
+      if (h.querySelectorAll) Array.from(h.querySelectorAll("li, a, span, button")).forEach(el => {
+        const txt = (el.innerText || "").trim();
+        if (txt && txt.length <= 40 && /\\d/.test(txt) && /(post|follower|following)/i.test(txt))
+          out._items.push(txt);
+      });
+      return out;
     }
     """
 
     def _read_profile_counts(self, page) -> dict:
         """Return {'posts', 'followers', 'following'} as ints (or None each).
 
-        Prefers the EXACT count from the title tooltip (e.g. '15,234') over the
-        abbreviated visible text ('15.2K'): followers/following via their stable
-        count links, posts via the header <li> items. Falls back to a regex over the
-        header/main text (abbreviated) only when nothing structured is found."""
+        Prefers the EXACT count from the title tooltip (e.g. '15,262') over the
+        abbreviated visible text ('15.2K'). Falls back to the abbreviated wrapper text,
+        then a regex over the header/main text."""
         counts = {"posts": None, "followers": None, "following": None}
 
         try:
@@ -2610,15 +2628,15 @@ class Bot:
         except Exception:
             data = {}
 
-        # Followers / following from their links - title (exact) first, text (abbrev) fallback.
-        for key in ("followers", "following"):
+        # Exact value from the title tooltips.
+        for key in ("posts", "followers", "following"):
             d = data.get(key)
-            if isinstance(d, dict):
-                counts[key] = parse_count(d.get("title") or "") or parse_count(d.get("text") or "")
+            if isinstance(d, dict) and d.get("title"):
+                counts[key] = parse_count(d["title"])
 
-        # Posts (and any follower/following the links missed) from the <li> items.
-        for it in data.get("items") or []:
-            low = (it.get("text") or "").lower()
+        # Abbreviated text fallback for anything the titles missed.
+        for txt in data.get("_items") or []:
+            low = txt.lower()
             if "post" in low:
                 key = "posts"
             elif "follower" in low:
@@ -2628,7 +2646,7 @@ class Bot:
             else:
                 continue
             if counts[key] is None:
-                counts[key] = parse_count(it.get("title") or "") or parse_count(it.get("text") or "")
+                counts[key] = parse_count(txt)
 
         # Strategy 2: regex over the header text for anything still missing.
         if any(v is None for v in counts.values()):
