@@ -2660,7 +2660,8 @@
         async refreshAccountNow() {
           try {
             const r = await this.fetch('/api/account/refresh?force=true', { method: 'POST' });
-            if (r.running) this.showToast('Counts update live while running', 'info');
+            if (r.queued) this.showToast('Re-syncing on the bot\'s next action…', 'info');
+            else if (r.running) this.showToast('Counts update live while running', 'info');
             else this.showToast('Re-syncing from Instagram…', 'success');
           } catch (e) { this.showToast('Could not re-sync account', 'error'); }
         },

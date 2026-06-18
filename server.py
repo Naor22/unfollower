@@ -805,6 +805,12 @@ async def refresh_account(force: bool = False):
     one-shot live fetch (background) unless we fetched very recently. `force=true`
     (a manual click) skips the freshness throttle so the user can re-sync now."""
     if bot_instance.is_running:
+        # Can't open a 2nd browser while the bot owns it. On a manual force, queue a
+        # re-sync the bot performs itself on its next action; otherwise it's a no-op
+        # (the run already updates counts as it acts).
+        if force:
+            bot_instance._force_account_refresh = True
+            return {"ok": True, "running": True, "queued": True}
         return {"ok": True, "running": True}
     ts = bot.read_account_stats().get("ts", 0)
     if not force and time.time() - ts < 300:

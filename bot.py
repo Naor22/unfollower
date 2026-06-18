@@ -883,6 +883,7 @@ class Bot:
                                        # starts acting (the core bot's self-scrape must not)
         self._warmed = False    # one-time external-scraper pool warm-up gate
         self._actions_since_resync = 0  # drives periodic account-count re-sync
+        self._force_account_refresh = False  # set by a dashboard force-refresh while running
         self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
         self._recent_reach_tags = collections.deque(maxlen=20)  # last reach tags liked, for reach diversity
         self._reach_consumed = set()    # reach URLs picked this run (pre-log de-dupe guard)
@@ -3339,10 +3340,14 @@ class Bot:
             self.state.update(account_following=max(0, cur + delta))
 
     def _tick_resync(self, page) -> None:
-        """Count an action and do a full re-sync every N actions (configurable)."""
+        """Count an action and do a full re-sync every N actions (configurable), or
+        immediately when a manual force-refresh was queued from the dashboard (the bot
+        owns the browser while running, so the click can't fetch directly - it re-syncs
+        here, on the next action, instead)."""
         n = int((load_config().get("behavior", {}) or {}).get("account_resync_every", 40))
         self._actions_since_resync = getattr(self, "_actions_since_resync", 0) + 1
-        if n > 0 and self._actions_since_resync >= n:
+        if getattr(self, "_force_account_refresh", False) or (n > 0 and self._actions_since_resync >= n):
+            self._force_account_refresh = False
             self._refresh_account_counts(page)
 
     _PRIVATE_RE = re.compile(r"This account is private|This Account is Private", re.I)
