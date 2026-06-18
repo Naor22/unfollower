@@ -1443,6 +1443,12 @@
           </div>
 
           <div class="card" style="margin-top:18px;">
+            <div class="card-title">Daily tasks <span class="pill">today's action ledger</span></div>
+            <p class="hint" style="margin-bottom:12px;">Reset today's follow / unfollow / like counts to zero so the bot can run a fresh full day's caps again. Caps re-roll; a bot that's sleeping on "daily caps reached" wakes and resumes within ~a minute. Your permanent logs are untouched.</p>
+            <button class="ghost" @click="resetDaily()" :disabled="resetBusy" title="Zero today's action counts so the bot runs again">Reset daily tasks</button>
+          </div>
+
+          <div class="card" style="margin-top:18px;">
             <div class="card-title">Deploy <span class="pill">pull latest from GitHub</span>
               <div style="flex:1"></div>
               <button class="ghost sm" @click="loadDeployStatus()" :disabled="deployBusy">Check</button>
@@ -1933,6 +1939,7 @@
         scraper: null,
         scraperBusy: false,
         clearBusy: false,
+        resetBusy: false,
         poolModal: null,
         poolFilter: '',
         scraperLog: [],
@@ -2801,6 +2808,16 @@
             await this.fetch('/api/restart', { method: 'POST' });
             this.showToast('Restarting service… the dashboard will reconnect shortly (refresh if it doesn\'t).', 'success');
           } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        async resetDaily() {
+          if (!confirm("Reset today's follow / unfollow / like counts to zero so the bot can run a full day again?")) return;
+          this.resetBusy = true;
+          try {
+            await this.fetch('/api/daily/reset', { method: 'POST' });
+            this.showToast('Daily tasks reset — the bot can run a full day again', 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+          finally { this.resetBusy = false; }
         },
 
         anyDeploySelected() { return Object.values(this.deploySel).some(Boolean); },

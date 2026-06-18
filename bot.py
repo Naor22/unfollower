@@ -5646,12 +5646,18 @@ class Bot:
                     # 'scraping' while it works rather than a flat 'sleeping'.
                     if self._day_capped_for_mode(day_cfg, mode):
                         disconnect(); self._set_acting(False)
-                        gate_secs = self._seconds_until_tomorrow()
-                        resume_clk = time.strftime("%H:%M", time.localtime(time.time() + gate_secs))
-                        self.state.update(next_action_at=time.time() + gate_secs)
-                        self._sleep_reflecting_scraper(
-                            gate_secs,
-                            f"daily caps reached - resuming ~{resume_clk} (in ~{gate_secs / 3600:.1f}h)")
+                        # Sleep toward tomorrow in short chunks, re-checking the cap each
+                        # chunk - so a manual "reset daily tasks" wakes the bot within ~a
+                        # minute instead of waiting for midnight. The burner keeps filling
+                        # pools meanwhile (reflected as 'scraping').
+                        while not self._stop_event.is_set() and \
+                                self._day_capped_for_mode(load_config(), mode):
+                            gate_secs = self._seconds_until_tomorrow()
+                            resume_clk = time.strftime("%H:%M", time.localtime(time.time() + gate_secs))
+                            self.state.update(next_action_at=time.time() + gate_secs)
+                            self._sleep_reflecting_scraper(
+                                min(gate_secs, 60.0),
+                                f"daily caps reached - resuming ~{resume_clk} (in ~{gate_secs / 3600:.1f}h)")
                         self.state.update(next_action_at=None)
                         continue
 

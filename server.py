@@ -1163,6 +1163,26 @@ async def scraper_stop():
     return {"ok": True, "stopped": stopped, "running": bot.scraper_running()}
 
 
+@app.post("/api/daily/reset")
+async def reset_daily():
+    """Reset today's action ledger (follow/unfollow/like counts + rest/block tallies)
+    so the bot can run a fresh full day's caps again. A bot currently sleeping on
+    'daily caps reached' re-checks within ~a minute and resumes on its own."""
+    try:
+        bot.DAILY_COUNTS.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    bot_instance._ledger = None   # drop the in-memory copy so it re-rolls fresh caps
+    try:
+        bot_instance._publish_day_counts(bot.load_config())   # zero the top-bar now
+    except Exception:
+        pass
+    bot.append_event("daily_reset")
+    return {"ok": True}
+
+
 # ---------- deploy (browser file upload) ----------
 
 # Web assets land in static/; everything else routes by extension below. Anything
