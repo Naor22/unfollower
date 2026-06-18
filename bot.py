@@ -1843,6 +1843,12 @@ class Bot:
                     self.state.emit("log", {"level": "info",
                                             "msg": f"+{state['new']} from {task['desc']} "
                                                    f"(backlog {pending_count()})"})
+                elif not task["exhausted"]:
+                    # Surface sources that returned NOTHING (gated / drained / all already
+                    # excluded), so it's visible WHICH sources were tried and came up empty -
+                    # otherwise only yielding sources log and a source looks untried.
+                    self.state.emit("log", {"level": "info",
+                                            "msg": f"{task['desc']} → 0 new (drained or gated)"})
                 if state["new"] < chunk_box[0]:
                     task["exhausted"] = True   # gave less than a fair chunk - drained
             if yielded or not progressed:
