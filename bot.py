@@ -3080,7 +3080,11 @@ class Bot:
                     follow_high = max(1, follow_low * mult)
                     follow_ready = self._pool_ready(day_cfg)
                     reach_need = self._reach_harvest_on(day_cfg)
-                    reach_low = self._reach_likes_left(day_cfg) if reach_need else 0
+                    # Low-water = a FULL day's likes, mirroring follow_low = a full day's
+                    # follows. (NOT _reach_likes_left / remaining-today: that shrinks as the
+                    # bot likes, so reach would look "at low-water" while still nearly empty
+                    # and the scraper would skip ahead to follow's high-water buffer.)
+                    reach_low = int(limits.get("likes_per_day", 100) or 100) if reach_need else 0
                     reach_mult = int(scr.get("reach_pool_mult", mult) or mult)
                     reach_high = max(1, int(limits.get("likes_per_day", 100) or 100) * reach_mult)
                     reach_ready = self._reach_pool_ready()
