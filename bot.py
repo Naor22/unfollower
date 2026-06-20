@@ -4904,6 +4904,8 @@ class Bot:
         # method set 'running' (both caps already met), leaving a stale 'warmup' status.
         self.state.update(status="running", phase_detail="finishing today's likes")
         did = 0
+        misses = 0   # consecutive posts that couldn't be liked (button race / unlikeable)
+        MAX_MISSES = 10
         while not self._stop_event.is_set():
             cfg = load_config()           # re-read so a pause / cap edit takes effect live
             if not self._can_act("likes", cfg):
@@ -4919,8 +4921,19 @@ class Bot:
                 if rc == "block":
                     return "block"
                 continue                  # 'cooldown' → backed off, keep going
-            if res == "":
-                return "empty"            # pool drained for now → let the scraper refill
+            if res in ("", None):
+                # No like happened. A like that FAILED (button race / unlikeable post) is
+                # consumed (logged), so the next pick differs - don't mistake one failure
+                # for an empty pool. Only give up when the pool is actually drained, or
+                # after a run of misses (so we don't spin if every post fails).
+                if self._reach_pool_ready() <= 0:
+                    return "empty"
+                misses += 1
+                if misses >= MAX_MISSES:
+                    return "empty"
+                self._interruptible_sleep(random.uniform(3.0, 7.0))   # brief gap, try next post
+                continue
+            misses = 0
             did += 1
             self.state.update(status="running",
                               phase_detail=f"finishing likes ({self._day_room('likes', cfg)} left)")
@@ -6299,25 +6312,31 @@ class Bot:
                         # would otherwise idle one pointless re-check interval first.
                         if self._day_capped_for_mode(day_cfg, mode):
                             continue
-                        # Don't hard-stop when the pool is empty - sleep a short,
-                        # randomized interval and re-check. A background scraper
-                        # service refills the pool; churn-unfollows keep maturing.
-                        lo = float(day_scraper.get("idle_recheck_min", 15))
-                        hi = float(day_scraper.get("idle_recheck_max", 30))
-                        sleep_s = random.uniform(min(lo, hi), max(lo, hi)) * 60
                         # Explain WHY we're re-checking rather than acting, so a short
                         # countdown right after a cap is hit reads sensibly. In marketing
                         # one cap can be reached while the other still has room (e.g.
                         # follows done for the day, but unfollows mature over time).
                         f_room = self._day_room("follows", day_cfg)
                         u_room = self._day_room("unfollows", day_cfg)
-                        # Likes still short with follow+unfollow done = waiting on the reach
-                        # pool to refill so the bot can finish today's likes too.
+                        # Likes still short with follow+unfollow done = finishing today's
+                        # likes off the reach pool (the drain backed off on a run of
+                        # unlikeable posts, or is waiting for a refill).
                         likes_only = (mode == "marketing" and f_room <= 0 and u_room <= 0
                                       and self._reach_finishable(day_cfg)
                                       and self._day_room("likes", day_cfg) > 0)
+                        # Don't hard-stop when the pool is empty - sleep a short,
+                        # randomized interval and re-check. A background scraper service
+                        # refills the pool; churn-unfollows keep maturing. When ONLY likes
+                        # remain, re-check soon (~2-3m) instead of the full idle window -
+                        # the reach pool usually still has posts to grind through.
                         if likes_only:
-                            note = "follow + unfollow done - finishing today's likes as the reach pool refills"
+                            sleep_s = random.uniform(120, 180)
+                        else:
+                            lo = float(day_scraper.get("idle_recheck_min", 15))
+                            hi = float(day_scraper.get("idle_recheck_max", 30))
+                            sleep_s = random.uniform(min(lo, hi), max(lo, hi)) * 60
+                        if likes_only:
+                            note = "follow + unfollow done - finishing today's likes"
                         elif mode == "marketing" and f_room <= 0 and u_room > 0:
                             note = "follow cap reached for today - waiting for unfollows to become due"
                         elif mode == "marketing" and u_room <= 0 and f_room > 0:
