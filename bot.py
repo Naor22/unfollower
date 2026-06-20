@@ -919,6 +919,7 @@ class Bot:
         self._force_account_refresh = False  # set by a dashboard force-refresh while running
         self._likers_blocked_until = 0.0  # pause profile-liker scraping until this ts (IG gated)
         self._active_burner_dir = None  # which burner profile the scraper is currently using
+        self._deep_idle = False  # bot in a long sleep (active-hours/daily-cap) → scraper builds high-water
         self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
         self._recent_reach_tags = collections.deque(maxlen=20)  # last reach tags liked, for reach diversity
         self._reach_consumed = set()    # reach URLs picked this run (pre-log de-dupe guard)
@@ -996,11 +997,23 @@ class Bot:
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             tmp = BOT_RUNTIME.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps({"acting": acting, "running": running, "ts": time.time()}),
+            tmp.write_text(json.dumps({"acting": acting, "running": running,
+                                       "deep_idle": getattr(self, "_deep_idle", False),
+                                       "ts": time.time()}),
                            encoding="utf-8")
             os.replace(tmp, BOT_RUNTIME)
         except Exception:
             pass
+
+    def _bot_deep_idle(self) -> bool:
+        """Used by the scraper: is the main bot in a LONG sleep (outside active hours /
+        daily caps reached), so it won't consume the pools for hours? Then the scraper
+        builds BOTH pools to high-water, not just the one whose own cap is spent."""
+        try:
+            d = json.loads(BOT_RUNTIME.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return bool(d.get("deep_idle")) and (time.time() - float(d.get("ts", 0))) < 120
 
     def _bot_is_acting(self) -> bool:
         """Used by the scraper process: is the main bot actively working right now?
@@ -3458,10 +3471,16 @@ class Bot:
                     # consume the pools, so fill them up and then idle). While the bot is
                     # alive WITH room left we stop at low-water and let it work the Pi.
                     bot_running = self._bot_is_running()
+                    # 'Deep idle' = the bot is in a LONG sleep (outside active hours, or
+                    # daily caps reached) - it won't consume either pool for hours, so build
+                    # BOTH to high-water now (not just the pool whose own cap is spent). Without
+                    # this, a night sleep with follows capped but likes not built only the
+                    # follow buffer, leaving reach empty for the morning.
+                    deep_idle = (not bot_running) or self._bot_deep_idle()
                     follow_build_high = follow_need and (
-                        not bot_running or self._day_room("follows", day_cfg) <= 0)
+                        deep_idle or self._day_room("follows", day_cfg) <= 0)
                     reach_build_high = reach_need and (
-                        not bot_running or self._day_room("likes", day_cfg) <= 0)
+                        deep_idle or self._day_room("likes", day_cfg) <= 0)
                     # STRICT fill ORDER (the whole ladder runs in ONE pass, in this
                     # sequence, so the bot can always START before either pool spends time
                     # on its deep buffer, and follow's buffer is built before reach's):
@@ -6124,12 +6143,15 @@ class Bot:
                     day_cfg = load_config()
                     pacing = day_cfg["pacing"]
                     self._publish_day_counts(day_cfg)   # top bar: done / cap (also re-rolls at midnight)
+                    self._deep_idle = False   # default; set True only in the long-sleep gates below
 
                     # --- ban-safety gates (NO browser needed → keep the bot's Chrome
                     #     CLOSED so the scraper gets the whole Pi) ---
                     # Outside the configured active hours → sleep until the window opens.
                     gate_secs = self._seconds_until_active(day_cfg)
                     if gate_secs > 0:
+                        # Long sleep → tell the scraper to build BOTH pools to high-water.
+                        self._deep_idle = True
                         disconnect(); self._set_acting(False)
                         self.state.update(
                             status="sleeping", current_target=None,
@@ -6142,6 +6164,7 @@ class Bot:
                     # The burner keeps building tomorrow's pools meanwhile, so reflect
                     # 'scraping' while it works rather than a flat 'sleeping'.
                     if self._day_capped_for_mode(day_cfg, mode):
+                        self._deep_idle = True   # done for the day → scraper builds both pools high
                         disconnect(); self._set_acting(False)
                         # Sleep toward tomorrow in short chunks, re-checking the cap each
                         # chunk - so a manual "reset daily tasks" wakes the bot within ~a
