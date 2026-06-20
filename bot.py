@@ -39,6 +39,7 @@ ACCOUNT_STATS = DATA_DIR / "account_stats.json"
 SCRAPER_STATUS = DATA_DIR / "scraper_status.json"   # separate scraper service heartbeat/counts
 SCRAPER_ACTIVITY = DATA_DIR / "scraper_activity.json"  # scraper's recent log lines (live feed)
 SCRAPER_PID = DATA_DIR / "scraper.pid"              # so the server can track/stop the scraper
+BURNER_COOLDOWNS = DATA_DIR / "burner_cooldowns.json"  # per-burner cooldown timestamps (multi-burner failover)
 DAILY_COUNTS = DATA_DIR / "daily_counts.json"       # real per-CALENDAR-DAY action ledger (ban safety)
 BOT_RUNTIME = DATA_DIR / "bot_runtime.json"         # bot "acting" signal so the scraper yields the Pi
 ACCOUNT_HISTORY = DATA_DIR / "account_history.log"  # ts/followers/following time-series (growth graph)
@@ -906,7 +907,7 @@ class Bot:
         self._actions_since_resync = 0  # drives periodic account-count re-sync
         self._force_account_refresh = False  # set by a dashboard force-refresh while running
         self._likers_blocked_until = 0.0  # pause profile-liker scraping until this ts (IG gated)
-        self._burner_unhealthy_until = 0.0  # pause scraping until this ts (burner can't navigate IG)
+        self._active_burner_dir = None  # which burner profile the scraper is currently using
         self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
         self._recent_reach_tags = collections.deque(maxlen=20)  # last reach tags liked, for reach diversity
         self._reach_consumed = set()    # reach URLs picked this run (pre-log de-dupe guard)
@@ -1681,7 +1682,65 @@ class Bot:
     # sweep with ZERO new candidates, the burner can't reach IG (logged out / checkpointed
     # / rate-limited / network) - stop hammering, diagnose, and back off for the cooldown.
     _BURNER_NAV_FAIL_LIMIT = 4
-    _BURNER_UNHEALTHY_COOLDOWN = 1800.0   # 30 min
+    _BURNER_UNHEALTHY_COOLDOWN = 1800.0   # 30 min - transient throttle / network
+    _BURNER_BLOCKED_COOLDOWN = 21600.0    # 6 h - checkpoint / logged out (needs a manual fix)
+
+    def _burner_accounts(self, scr: dict) -> list:
+        """Burner profiles to rotate among (multi-burner failover). Each is
+        {user_data_dir, label}. Falls back to the single scraper.user_data_dir (or the
+        CDP/default empty profile) so existing single-burner setups are unchanged."""
+        out = []
+        for a in (scr.get("accounts") or []):
+            if isinstance(a, dict) and a.get("user_data_dir"):
+                acct = dict(a)   # keep optional per-burner overrides (proxy/user_agent/…)
+                acct["label"] = a.get("label") or a["user_data_dir"]
+                out.append(acct)
+        if not out:
+            udd = scr.get("user_data_dir") or ""
+            out.append({"user_data_dir": udd, "label": udd or "default"})
+        return out
+
+    def _read_burner_cooldowns(self) -> dict:
+        try:
+            return json.loads(BURNER_COOLDOWNS.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return {}
+
+    def _mark_burner_cooldown(self, user_data_dir: str, seconds: float, reason: str = "") -> None:
+        """Sideline a burner that can't navigate IG for `seconds`, so the scraper rotates
+        to another (or idles if it's the only one). Persisted so a restart doesn't
+        immediately re-pick a flagged burner."""
+        cd = self._read_burner_cooldowns()
+        cd[user_data_dir or ""] = {"until": time.time() + seconds, "reason": reason}
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = BURNER_COOLDOWNS.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(cd), encoding="utf-8")
+            os.replace(tmp, BURNER_COOLDOWNS)
+        except Exception:
+            pass
+
+    def _select_burner(self, scr: dict):
+        """Pick the first burner not in cooldown. Returns (account|None, total, soonest_ts).
+        account=None means every burner is cooling down (soonest_ts = when one frees up).
+        Prefers the current active burner when it's healthy, to avoid needless flapping."""
+        accts = self._burner_accounts(scr)
+        cd = self._read_burner_cooldowns()
+        now = time.time()
+
+        def cooling(a):
+            return float((cd.get(a["user_data_dir"]) or {}).get("until", 0)) > now
+
+        available = [a for a in accts if not cooling(a)]
+        if available:
+            cur = getattr(self, "_active_burner_dir", None)
+            for a in available:                       # stick with the current one if it's healthy
+                if a["user_data_dir"] == cur:
+                    return a, len(accts), 0.0
+            return available[0], len(accts), 0.0
+        soonest = min((float((cd.get(a["user_data_dir"]) or {}).get("until", 0)) for a in accts),
+                      default=now)
+        return None, len(accts), soonest
 
     def _burner_health_probe(self, page) -> str:
         """After repeated navigation timeouts, classify WHY the burner can't scrape so the
@@ -1989,7 +2048,12 @@ class Bot:
         if unhealthy and page is not None:
             reason = self._burner_health_probe(page)
             shot = self._screenshot(page, "burner_unhealthy")
-            self._burner_unhealthy_until = time.time() + self._BURNER_UNHEALTHY_COOLDOWN
+            # Sideline THIS burner so the scraper rotates to another (or idles if it's the
+            # only one). Logged out / checkpointed needs a manual fix → cool down longer.
+            cool = (self._BURNER_UNHEALTHY_COOLDOWN
+                    if "rate-limit" in reason.lower() or "reach instagram" in reason.lower()
+                    else self._BURNER_BLOCKED_COOLDOWN)
+            self._mark_burner_cooldown(getattr(self, "_active_burner_dir", "") or "", cool, reason)
             self._write_scraper_status(error=reason)
             self.state.emit("log", {"level": "error",
                 "msg": f"burner navigation failing ({nav_timeouts} page-load timeouts, 0 new) - "
@@ -3235,6 +3299,10 @@ class Bot:
             for k, v in (scr.get("browser") or {}).items():
                 if v not in (None, ""):
                     browser_cfg[k] = v
+            # Base fingerprint snapshot: on a burner SWITCH we reset these from the base
+            # then apply that burner's overrides, so a previous burner's proxy/UA never
+            # leaks onto the next one.
+            base_browser_cfg = dict(browser_cfg)
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             try:
                 SCRAPER_PID.write_text(str(os.getpid()), encoding="utf-8")
@@ -3313,18 +3381,38 @@ class Bot:
                         self._write_scraper_status(phase="disabled (toggle off)")
                         self._interruptible_sleep(30)
                         continue
-                    # Burner unhealthy (can't navigate IG): back off instead of hammering.
-                    # The breaker in _scrape_candidates set this + a diagnostic error; idle,
-                    # keeping the cause visible, until the cooldown elapses then retry.
-                    unhealthy_left = getattr(self, "_burner_unhealthy_until", 0) - time.time()
-                    if unhealthy_left > 0:
+                    # Multi-burner failover: pick a burner that isn't cooling down (the
+                    # breaker sidelines one that can't navigate IG). If every burner is
+                    # cooling, idle with the cause visible until the soonest one frees up.
+                    active, n_burners, soonest = self._select_burner(scr)
+                    if active is None:
                         disconnect()
+                        wait_m = max(0.0, (soonest - time.time()) / 60)
                         self._write_scraper_status(
-                            phase=f"paused - burner can't reach Instagram (retry in ~{unhealthy_left / 60:.0f}m)",
-                            error="burner navigation failing - see the latest log line for the cause "
-                                  "(logged out / checkpointed / rate-limited / network).")
+                            phase=f"paused - all {n_burners} burner(s) cooling down (retry in ~{wait_m:.0f}m)",
+                            error="all burner accounts are rate-limited / blocked - see the latest "
+                                  "log lines for each cause (logged out / checkpointed / throttled).")
                         self._interruptible_sleep(min(idle_poll, 60))
                         continue
+                    # Switch the active burner profile when it changed (close the old
+                    # Chrome first so two profiles never open at once).
+                    if active["user_data_dir"] != self._active_burner_dir:
+                        disconnect()
+                        if self._active_burner_dir is not None and n_burners > 1:
+                            self.state.emit("log", {"level": "info",
+                                "msg": f"scraper switching burner → {active['label']}"})
+                        self._active_burner_dir = active["user_data_dir"]
+                        browser_cfg["user_data_dir"] = active["user_data_dir"]
+                        if active["user_data_dir"]:
+                            browser_cfg["cdp_endpoint"] = ""   # persistent profile wins over any CDP default
+                        # Optional per-burner fingerprint/proxy: rotating accounts on the
+                        # SAME IP won't dodge an IP-level limit, so a per-burner proxy makes
+                        # failover actually effective. Reset from base first so the previous
+                        # burner's overrides don't leak, then apply this burner's own.
+                        for k in ("proxy", "user_agent", "viewport_width",
+                                  "viewport_height", "locale", "timezone_id", "executable_path"):
+                            browser_cfg[k] = (active[k] if active.get(k) not in (None, "")
+                                              else base_browser_cfg.get(k))
                     # Coordinate with the bot so they don't fight over the Pi: only
                     # scrape during the bot's DEAD TIME. Two-stage fill - always bring
                     # both pools to LOW-water (so the bot can start), but only build the
@@ -4797,6 +4885,9 @@ class Bot:
         eng = cfg.get("engagement", {}) or {}
         if not eng.get("reach_enabled", False):
             return "cap"   # reach off → nothing to drain, treat as satisfied
+        # Active work, not warmup: the churn cycle may have returned before any action
+        # method set 'running' (both caps already met), leaving a stale 'warmup' status.
+        self.state.update(status="running", phase_detail="finishing today's likes")
         did = 0
         while not self._stop_event.is_set():
             cfg = load_config()           # re-read so a pause / cap edit takes effect live
@@ -4816,7 +4907,8 @@ class Bot:
             if res == "":
                 return "empty"            # pool drained for now → let the scraper refill
             did += 1
-            self.state.update(phase_detail=f"finishing likes ({self._day_room('likes', cfg)} left)")
+            self.state.update(status="running",
+                              phase_detail=f"finishing likes ({self._day_room('likes', cfg)} left)")
             eng = cfg.get("engagement", {}) or {}
             lo = float(eng.get("reach_like_min_delay", 30))
             hi = float(eng.get("reach_like_max_delay", 90))

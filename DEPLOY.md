@@ -245,6 +245,26 @@ python scraper_login.py
 # enter the 2FA code if prompted; on success the burner profile is saved
 ```
 
+**4b. (Optional) Multiple burners for failover.** A single burner that gets
+rate-limited or checkpointed stalls the whole pipeline. List several under
+`scraper.accounts` in `config.yaml` and the scraper **auto-rotates to a healthy one**
+when the current burner can't navigate Instagram (the nav circuit-breaker sidelines a
+flagged burner for 30 min if it's throttled, 6 h if it's logged out / checkpointed):
+```yaml
+scraper:
+  accounts:
+    - { user_data_dir: data/scraper-profile,   label: burner1,
+        username_env: SCRAPER_IG_USERNAME,   password_env: SCRAPER_IG_PASSWORD }
+    - { user_data_dir: data/scraper-profile-2, label: burner2,
+        username_env: SCRAPER_IG_USERNAME_2, password_env: SCRAPER_IG_PASSWORD_2,
+        proxy: 'http://user:pass@host:port' }   # optional, to dodge IP-level limits
+```
+Add each burner's `SCRAPER_IG_USERNAME*` / `SCRAPER_IG_PASSWORD*` pair to `.env` (each a
+**different** throwaway account), then run `python scraper_login.py` once — it logs in
+every profile that isn't already. Note: rotating accounts on the **same IP** won't help
+an IP-level limit, so give each burner its own `proxy` if you can. If every burner is
+cooling down, the Scraper card shows *"all burner(s) cooling down — retry in ~Nm."*
+
 **5. Run it from the dashboard.** The server manages the scraper as a child process,
 so there's **nothing to install** — open **System → Scraper service** and click
 **Start scraper**. It also **auto-starts with the bot** whenever you start in
