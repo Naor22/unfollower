@@ -4811,9 +4811,16 @@ class Bot:
         m = re.search(r"/(?:p|reel|tv)/([^/?#]+)", url)
         pkey = "post:" + (m.group(1) if m else url)
         try:
-            page.goto(url, wait_until="domcontentloaded")
+            # Explicit timeout: a reach goto with no cap can block far past the scraper's
+            # 90s "bot is acting" window on a slow/stalled CDP Chrome, so the scraper
+            # concludes the bot is idle and starts vetting while the bot sits frozen here.
+            page.goto(url, wait_until="domcontentloaded", timeout=15000)
             self._interruptible_sleep(random.uniform(1.5, 3.0))
         except Exception:
+            # Post won't open (slow / deleted / gated). Consume it so the same dead URL
+            # isn't retried forever, and report nothing-liked so the drain moves on.
+            append_log(_log_path("reach_liked_log", "data/reach_liked.log"),
+                       f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{url}\t")
             return ""
         # Identify the poster (display only). None -> the row shows no @handle (and
         # never a bogus '@post' link).
@@ -4908,11 +4915,18 @@ class Bot:
         MAX_MISSES = 10
         while not self._stop_event.is_set():
             cfg = load_config()           # re-read so a pause / cap edit takes effect live
+            # Keep the "bot is acting" signal fresh every iteration so a slow drain never
+            # looks idle to the scraper (which would then vet concurrently and thrash the Pi).
+            self._set_acting(True)
             if not self._can_act("likes", cfg):
                 return "cap"              # likes capped (or outside active hours)
             if max_actions and did >= max_actions:
                 return "progress"
-            res = self._reach_one(page)
+            try:
+                res = self._reach_one(page)
+            except Exception as e:
+                self.state.emit("log", {"level": "error", "msg": f"reach like error: {e}"})
+                res = ""                  # treat as a miss → next post
             if res == "cap":
                 return "cap"
             if res == "ratelimit":
