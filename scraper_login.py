@@ -94,6 +94,18 @@ def login_one(p, b, bc, scr, udd, username, password, label):
     elif bc.get("channel"):
         pkwargs["channel"] = bc["channel"]
 
+    # A persistent Chromium profile can only be opened by ONE process. The scraper is
+    # confirmed stopped (checked in main), so any leftover Singleton* lock is stale (from
+    # a killed scraper) and safe to clear - otherwise Chromium aborts with
+    # "Failed to create a ProcessSingleton for your profile directory".
+    for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            (Path(udd) / lock).unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
     ctx = p.chromium.launch_persistent_context(**pkwargs)
     try:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -176,6 +188,15 @@ def main():
     bc = cfg["browser"]
     scr = cfg.get("scraper", {}) or {}
     load_dotenv(ROOT / ".env", override=True)
+
+    # The running scraper holds the burner profile(s) open - two processes can't open the
+    # same Chromium profile, so login would fail with a ProcessSingleton error. Refuse
+    # rather than collide.
+    if bot.scraper_running():
+        sys.exit("The scraper service is running and holds the burner profile(s) open, so "
+                 "login can't open them too.\nStop it first: dashboard → Scraper → Stop "
+                 "scraper, or `sudo systemctl stop unfollower` (then start it again after "
+                 "this finishes), and re-run `python scraper_login.py`.")
 
     rows = _accounts(cfg)
     print(f"[*] {len(rows)} burner profile(s) to check.")
