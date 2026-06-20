@@ -906,6 +906,7 @@ class Bot:
         self._actions_since_resync = 0  # drives periodic account-count re-sync
         self._force_account_refresh = False  # set by a dashboard force-refresh while running
         self._likers_blocked_until = 0.0  # pause profile-liker scraping until this ts (IG gated)
+        self._burner_unhealthy_until = 0.0  # pause scraping until this ts (burner can't navigate IG)
         self._recent_follow_seeds = collections.deque(maxlen=20)  # last seeds followed, for source diversity
         self._recent_reach_tags = collections.deque(maxlen=20)  # last reach tags liked, for reach diversity
         self._reach_consumed = set()    # reach URLs picked this run (pre-log de-dupe guard)
@@ -1676,6 +1677,29 @@ class Bot:
         return out[:cap]
 
     _LIKERS_COOLDOWN = 3600.0   # secs to pause liker scraping after IG hides a profile's likers
+    # Burner navigation circuit-breaker: if this many profile page-loads time out in a
+    # sweep with ZERO new candidates, the burner can't reach IG (logged out / checkpointed
+    # / rate-limited / network) - stop hammering, diagnose, and back off for the cooldown.
+    _BURNER_NAV_FAIL_LIMIT = 4
+    _BURNER_UNHEALTHY_COOLDOWN = 1800.0   # 30 min
+
+    def _burner_health_probe(self, page) -> str:
+        """After repeated navigation timeouts, classify WHY the burner can't scrape so the
+        dashboard shows a precise cause instead of silently spinning. Returns a short
+        human reason. Checks (in order): can it load instagram.com at all → is it
+        checkpointed → is it logged out → else IG is throttling its page loads."""
+        try:
+            page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=20000)
+        except Exception:
+            return ("burner can't reach Instagram at all - the Pi's network/proxy is down or "
+                    "the burner's IP is blocked. Check connectivity / the burner proxy.")
+        if self._checkpoint_detected(page):
+            return ("burner is CHECKPOINTED / blocked by Instagram - open the burner Chrome and "
+                    "clear the challenge, or swap the burner account.")
+        if not self._is_logged_in(page):
+            return ("burner is LOGGED OUT - run scraper_login.py to log the burner back in.")
+        return ("Instagram is rate-limiting the burner (home loads, but profile pages time out) "
+                "- likely a temporary throttle on this account/IP. Backing off to let it cool down.")
 
     def _scrape_profile_likers(self, page, profile: str, cap: int = 600,
                                per_post: int = 60, on_collect=None) -> list[str]:
@@ -1900,6 +1924,12 @@ class Bot:
         # off when the pool fills get to lead next time - even coverage over refills.
         rr = 0
         yielded = False
+        # Burner health tracking for this sweep: count profile-load timeouts and whether
+        # anything was actually harvested. Many timeouts + zero new = the burner can't
+        # navigate IG → trip the circuit-breaker instead of spinning for an hour.
+        nav_timeouts = 0
+        sweep_progressed = False
+        unhealthy = False
         while not self._stop_event.is_set() and pending_count() < pool_min:
             if _yield_to_bot():
                 yielded = True
@@ -1928,9 +1958,18 @@ class Bot:
                     task["exhausted"] = True
                     self.state.emit("log", {"level": "error",
                                             "msg": f"scrape {task['desc']} failed: {e}"})
+                    msg = str(e)
+                    if "Timeout" in msg and ("goto" in msg or "navigating to" in msg):
+                        nav_timeouts += 1
+                        # Many page-loads timing out with nothing harvested = the burner
+                        # can't reach IG. Stop the sweep early and diagnose (below).
+                        if nav_timeouts >= self._BURNER_NAV_FAIL_LIMIT and not sweep_progressed:
+                            unhealthy = True
+                            break
                     continue
                 if state["new"]:
                     progressed = True
+                    sweep_progressed = True
                     self.state.emit("log", {"level": "info",
                                             "msg": f"+{state['new']} from {task['desc']} "
                                                    f"(backlog {pending_count()})"})
@@ -1942,8 +1981,20 @@ class Bot:
                                             "msg": f"{task['desc']} → 0 new (drained or gated)"})
                 if state["new"] < chunk_box[0]:
                     task["exhausted"] = True   # gave less than a fair chunk - drained
-            if yielded or not progressed:
+            if unhealthy or yielded or not progressed:
                 break
+
+        # Burner can't navigate: diagnose the cause + back off so the scraper stops
+        # burning passes (and the dashboard shows WHY the pools aren't filling).
+        if unhealthy and page is not None:
+            reason = self._burner_health_probe(page)
+            shot = self._screenshot(page, "burner_unhealthy")
+            self._burner_unhealthy_until = time.time() + self._BURNER_UNHEALTHY_COOLDOWN
+            self._write_scraper_status(error=reason)
+            self.state.emit("log", {"level": "error",
+                "msg": f"burner navigation failing ({nav_timeouts} page-load timeouts, 0 new) - "
+                       f"{reason} (shot:{shot})"})
+            append_event("burner_unhealthy", reason[:160])
 
         if added:
             pool_write(pool)
@@ -3262,6 +3313,18 @@ class Bot:
                         self._write_scraper_status(phase="disabled (toggle off)")
                         self._interruptible_sleep(30)
                         continue
+                    # Burner unhealthy (can't navigate IG): back off instead of hammering.
+                    # The breaker in _scrape_candidates set this + a diagnostic error; idle,
+                    # keeping the cause visible, until the cooldown elapses then retry.
+                    unhealthy_left = getattr(self, "_burner_unhealthy_until", 0) - time.time()
+                    if unhealthy_left > 0:
+                        disconnect()
+                        self._write_scraper_status(
+                            phase=f"paused - burner can't reach Instagram (retry in ~{unhealthy_left / 60:.0f}m)",
+                            error="burner navigation failing - see the latest log line for the cause "
+                                  "(logged out / checkpointed / rate-limited / network).")
+                        self._interruptible_sleep(min(idle_poll, 60))
+                        continue
                     # Coordinate with the bot so they don't fight over the Pi: only
                     # scrape during the bot's DEAD TIME. Two-stage fill - always bring
                     # both pools to LOW-water (so the bot can start), but only build the
@@ -4180,12 +4243,30 @@ class Bot:
         self._interruptible_sleep(cooldown)
         return "cooldown"
 
+    def _reach_finishable(self, cfg) -> bool:
+        """Can the LIKES cap realistically still be worked? True only if reach is enabled
+        AND there's actually a way to like more right now: the reach pool already holds
+        unliked posts, OR the scraper can fill it. Used so the day stays 'open' for likes
+        only when likes can progress - never deadlocking when reach is on but unfillable
+        (no sources, scraper off/broken)."""
+        eng = cfg.get("engagement", {}) or {}
+        if not eng.get("reach_enabled", False):
+            return False
+        return self._reach_harvest_on(cfg) or self._reach_pool_ready() > 0
+
     def _day_capped_for_mode(self, cfg, mode) -> bool:
         if mode == "follow":
             return self._day_room("follows", cfg) <= 0
         if mode == "marketing":
-            return (self._day_room("follows", cfg) <= 0
-                    and self._day_room("unfollows", cfg) <= 0)
+            fu_done = (self._day_room("follows", cfg) <= 0
+                       and self._day_room("unfollows", cfg) <= 0)
+            # The day isn't done until LIKES are also capped - reach likes only fire
+            # interleaved with follow/unfollow actions, so when those caps are hit the
+            # like budget is usually still short. Keep working until likes are done too,
+            # but only while likes can actually progress (else we'd never end the day).
+            if fu_done and self._reach_finishable(cfg) and self._day_room("likes", cfg) > 0:
+                return False
+            return fu_done
         if mode == "unfollow":
             return self._day_room("unfollows", cfg) <= 0
         return False
@@ -4704,6 +4785,43 @@ class Bot:
         if not self._story_queue:
             return ""
         return self._do_reach(page, self._story_queue.pop(0))
+
+    def _drain_reach_to_cap(self, page, cfg, max_actions: int = None) -> str:
+        """Dedicated reach-liking phase: keep liking pool posts until the daily LIKES cap
+        is met, the reach pool empties, a rate-limit hits, or `max_actions` is reached.
+        Run when follow+unfollow are done for the day but likes still have room, so the
+        bot finishes ALL THREE caps instead of ending the day with likes short (reach
+        otherwise only fires interleaved with follow/unfollow actions). Each like is
+        paced + ledgered exactly like the interleaved tick.
+        Returns 'stopped' / 'block' / 'cap' / 'empty' / 'progress'."""
+        eng = cfg.get("engagement", {}) or {}
+        if not eng.get("reach_enabled", False):
+            return "cap"   # reach off → nothing to drain, treat as satisfied
+        did = 0
+        while not self._stop_event.is_set():
+            cfg = load_config()           # re-read so a pause / cap edit takes effect live
+            if not self._can_act("likes", cfg):
+                return "cap"              # likes capped (or outside active hours)
+            if max_actions and did >= max_actions:
+                return "progress"
+            res = self._reach_one(page)
+            if res == "cap":
+                return "cap"
+            if res == "ratelimit":
+                # A reach rate-limit is a real IG signal - back off like the follow path.
+                rc = self._handle_soft_block(cfg)
+                if rc == "block":
+                    return "block"
+                continue                  # 'cooldown' → backed off, keep going
+            if res == "":
+                return "empty"            # pool drained for now → let the scraper refill
+            did += 1
+            self.state.update(phase_detail=f"finishing likes ({self._day_room('likes', cfg)} left)")
+            eng = cfg.get("engagement", {}) or {}
+            lo = float(eng.get("reach_like_min_delay", 30))
+            hi = float(eng.get("reach_like_max_delay", 90))
+            self._interruptible_sleep(random.uniform(lo, max(lo, hi)))
+        return "stopped"
 
     def _maybe_story_reach_tick(self, page) -> str:
         """Interleaved story-reach for NON-CDP modes (where a 2nd concurrent tab
@@ -5361,6 +5479,11 @@ class Bot:
             # happen, dripping ~1 follow per cycle and repeatedly yielding to the scraper.
             # With the gate dropped, follows run straight to their own daily cap.
             unf_capped = self._day_room("unfollows", cfg) <= 0
+            # Both follow + unfollow caps met → nothing left for churn this day. Return
+            # so the caller can drain the reach pool to finish today's LIKES (the day
+            # isn't "done" until all three caps are, when reach can still progress).
+            if unf_capped and self._day_room("follows", cfg) <= 0:
+                return "exhausted"
 
             # --- unfollow batch: aged-review first ---
             if not u_dead and u_used < u_cap and not unf_capped:
@@ -5972,6 +6095,18 @@ class Bot:
                             daily_cap=int(_day_limits.get("follows_per_day", 80))
                         )
                         outcome = self._process_churn_cycle(page, day_cfg)
+                        # Finish the LIKES cap before ending the day. Reach likes only fire
+                        # interleaved with follow/unfollow actions, so when those caps are
+                        # done likes are usually still short - drain the reach pool now
+                        # (browser still up) until likes are capped / the pool empties.
+                        if (outcome not in ("stopped", "checkpoint", "block", "rest")
+                                and (day_cfg.get("engagement") or {}).get("reach_enabled", False)
+                                and self._day_room("likes", day_cfg) > 0):
+                            rc = self._drain_reach_to_cap(page, day_cfg)
+                            if rc == "stopped":
+                                outcome = "stopped"
+                            elif rc == "block":
+                                outcome = "block"
                     else:
                         self.state.update(daily_cap=int(_day_limits.get("unfollows_per_day", 80)))
                         outcome = self._process_day(
@@ -6069,7 +6204,14 @@ class Bot:
                         # follows done for the day, but unfollows mature over time).
                         f_room = self._day_room("follows", day_cfg)
                         u_room = self._day_room("unfollows", day_cfg)
-                        if mode == "marketing" and f_room <= 0 and u_room > 0:
+                        # Likes still short with follow+unfollow done = waiting on the reach
+                        # pool to refill so the bot can finish today's likes too.
+                        likes_only = (mode == "marketing" and f_room <= 0 and u_room <= 0
+                                      and self._reach_finishable(day_cfg)
+                                      and self._day_room("likes", day_cfg) > 0)
+                        if likes_only:
+                            note = "follow + unfollow done - finishing today's likes as the reach pool refills"
+                        elif mode == "marketing" and f_room <= 0 and u_room > 0:
                             note = "follow cap reached for today - waiting for unfollows to become due"
                         elif mode == "marketing" and u_room <= 0 and f_room > 0:
                             note = "unfollow cap reached for today - following more as the pool refills"
