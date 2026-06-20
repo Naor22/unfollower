@@ -109,6 +109,7 @@ DEFAULTS = {
         "reach_pool_mult": 5,
         "cdp_endpoint": "",
         "user_data_dir": "data/scraper-profile",
+        "accounts": [],             # multi-burner failover (configured in the dashboard)
         "idle_seconds": 600,
         "filter_delay_min": 1,
         "filter_delay_max": 3,
@@ -166,15 +167,22 @@ def _deep_fill(dst: dict, defaults: dict) -> int:
     return added
 
 
-def main() -> int:
+def upgrade() -> int:
+    """Add any missing new-schema keys to config.yaml (existing values are kept) and
+    re-save. Returns the number of keys added. Importable so the dashboard's
+    'Upgrade config' button can run it without a subprocess."""
     # load_config already migrates legacy → new schema in memory.
     cfg = bot.load_config()
     added = _deep_fill(cfg, DEFAULTS)
     # Always re-save: even with nothing added, this rewrites the FILE to the clean
     # schema (the in-memory cfg is already migrated).
     bot.save_config(cfg)
-    print(f"Config migrated to the clean schema; {added} default key(s) added. "
-          f"mode = {cfg.get('mode')}")
+    return added
+
+
+def main() -> int:
+    added = upgrade()
+    print(f"Config migrated to the clean schema; {added} default key(s) added.")
     return 0
 
 

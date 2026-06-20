@@ -234,6 +234,17 @@ class StateManager:
 
 # ---------- file helpers ----------
 
+def burner_profile_dir(account: dict) -> str:
+    """Stable Chromium profile dir for a burner account. Uses an explicit user_data_dir
+    if set, else derives one from the label/username so a dashboard-configured account
+    (no profile dir) maps to the same dir at login time (scraper_login.py) and run time
+    (the scraper). Shared by both so they never disagree."""
+    if account.get("user_data_dir"):
+        return account["user_data_dir"]
+    key = re.sub(r"[^a-z0-9]+", "-", (account.get("label") or account.get("username") or "").lower()).strip("-")
+    return f"data/scraper-profile-{key}" if key else "data/scraper-profile"
+
+
 USERNAME_HREF_RE = re.compile(r"^/([A-Za-z0-9._]+)/?$")
 RESERVED = {
     "explore", "reels", "direct", "accounts", "p", "stories", "tv", "about",
@@ -1687,13 +1698,17 @@ class Bot:
 
     def _burner_accounts(self, scr: dict) -> list:
         """Burner profiles to rotate among (multi-burner failover). Each is
-        {user_data_dir, label}. Falls back to the single scraper.user_data_dir (or the
-        CDP/default empty profile) so existing single-burner setups are unchanged."""
+        {user_data_dir, label, ...}. Accounts configured in the dashboard carry a
+        label/username (no explicit profile dir) - derive a stable dir from it so the
+        runtime matches what scraper_login.py created. Falls back to the single
+        scraper.user_data_dir (or the CDP/default empty profile) so existing
+        single-burner setups are unchanged."""
         out = []
         for a in (scr.get("accounts") or []):
-            if isinstance(a, dict) and a.get("user_data_dir"):
+            if isinstance(a, dict) and (a.get("user_data_dir") or a.get("username") or a.get("label")):
                 acct = dict(a)   # keep optional per-burner overrides (proxy/user_agent/…)
-                acct["label"] = a.get("label") or a["user_data_dir"]
+                acct["user_data_dir"] = burner_profile_dir(a)
+                acct["label"] = a.get("label") or a.get("username") or acct["user_data_dir"]
                 out.append(acct)
         if not out:
             udd = scr.get("user_data_dir") or ""

@@ -44,18 +44,19 @@ except Exception:
 def _accounts(cfg):
     """Resolve the burner profiles to log in: the scraper.accounts list if present,
     else the single scraper.user_data_dir. Returns [(user_data_dir, username, password,
-    label)]."""
+    label)]. Credentials come from the account itself (configured in the dashboard),
+    falling back to the username_env/password_env names in .env."""
     scr = cfg.get("scraper", {}) or {}
     rows = []
     accts = scr.get("accounts") or []
     if accts:
         for a in accts:
-            if not isinstance(a, dict) or not a.get("user_data_dir"):
+            if not isinstance(a, dict) or not (a.get("username") or a.get("label") or a.get("user_data_dir")):
                 continue
-            u_env = a.get("username_env", "SCRAPER_IG_USERNAME")
-            p_env = a.get("password_env", "SCRAPER_IG_PASSWORD")
-            rows.append((a["user_data_dir"], os.getenv(u_env), os.getenv(p_env),
-                         a.get("label") or a["user_data_dir"]))
+            udd = bot.burner_profile_dir(a)
+            username = a.get("username") or os.getenv(a.get("username_env", "SCRAPER_IG_USERNAME"))
+            password = a.get("password") or os.getenv(a.get("password_env", "SCRAPER_IG_PASSWORD"))
+            rows.append((udd, username, password, a.get("label") or a.get("username") or udd))
     else:
         udd = scr.get("user_data_dir") or ""
         if not udd:

@@ -363,6 +363,13 @@
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
     .form-grid .full { grid-column: 1 / -1; }
     @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } }
+    .burner-list { display: flex; flex-direction: column; gap: 8px; }
+    .burner-row { display: flex; gap: 8px; align-items: center; }
+    .burner-row input { flex: 1 1 0; min-width: 0; margin: 0; }
+    .burner-row input[type="text"]:first-child { flex: 0 1 120px; }
+    .burner-del { flex: 0 0 auto; color: var(--muted); }
+    .burner-del:hover { color: var(--danger, #e5484d); border-color: var(--danger, #e5484d); }
+    @media (max-width: 560px) { .burner-row { flex-wrap: wrap; } .burner-row input[type="text"]:first-child { flex: 1 1 100%; } }
     .switch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .switch-cell { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); }
     .switch-cell .sc-label { font-size: 13px; }
@@ -1460,6 +1467,14 @@
           </div>
 
           <div class="card" style="margin-top:18px;">
+            <div class="card-title">Upgrade config <span class="pill">add new defaults</span></div>
+            <p class="hint" style="margin-bottom:12px;">After a deploy that adds new settings, this fills <code>config.yaml</code> with any missing keys (using safe defaults) so they show up here. Your existing values are kept. Same as running <code>upgrade_config.py</code> on the Pi.</p>
+            <button class="ghost" @click="upgradeConfig()" :disabled="upgradeBusy" title="Add any missing config keys with their defaults">
+              <span x-text="upgradeBusy ? 'Upgrading…' : 'Upgrade config'"></span>
+            </button>
+          </div>
+
+          <div class="card" style="margin-top:18px;">
             <div class="card-title">Daily tasks <span class="pill">today's action ledger</span></div>
             <p class="hint" style="margin-bottom:12px;">Reset today's follow / unfollow / like counts to zero so the bot can run a fresh full day's caps again. Caps re-roll; a bot that's sleeping on "daily caps reached" wakes and resumes within ~a minute. Your permanent logs are untouched.</p>
             <button class="ghost" @click="resetDaily()" :disabled="resetBusy" title="Zero today's action counts so the bot runs again">Reset daily tasks</button>
@@ -1767,6 +1782,28 @@
                   <p class="hint" style="margin-top:8px;">Runs as a separate service on a 2nd Chrome (burner). It fills the pools during the bot's dead-time and stops once each pool reaches its high-water. Live status + controls on the <strong>Scraper</strong> tab.</p>
                   <p class="hint" style="margin-top:6px;">Vetting speed = <b>filter delay</b> between profiles + a <b>long break</b> every N. The burner only <i>views</i> profiles (no follows), so these can be brisker than the bot's pacing. Faster, still safe: filter delay ~0.5&ndash;1.2s, long break every ~80 for 30&ndash;90s.</p>
                 </div>
+
+                <div class="card">
+                  <div class="card-title">Burner accounts <span class="pill">failover</span></div>
+                  <p class="hint" style="margin-bottom:14px;">Add several throwaway accounts and the scraper <strong>auto-switches</strong> to a healthy one when the current burner gets rate-limited or checkpointed. Leave empty to use the single profile above. After saving, run <code>python scraper_login.py</code> on the Pi once — it logs in every account listed here (prompts for 2FA in the terminal). Rotating accounts on the <em>same IP</em> won't dodge an IP-level limit.</p>
+
+                  <template x-if="!(config.scraper.accounts && config.scraper.accounts.length)">
+                    <p class="hint" style="color:var(--muted);margin-bottom:12px;">No burner accounts yet — the scraper uses the single profile above.</p>
+                  </template>
+
+                  <div class="burner-list">
+                    <template x-for="(acct, i) in (config.scraper.accounts || [])" :key="i">
+                      <div class="burner-row">
+                        <input type="text" placeholder="Label" x-model="acct.label" aria-label="Burner label" />
+                        <input type="text" placeholder="IG username" autocomplete="off" autocapitalize="none" spellcheck="false" x-model="acct.username" aria-label="Burner username" />
+                        <input type="password" placeholder="Password" autocomplete="new-password" x-model="acct.password" aria-label="Burner password" />
+                        <button class="ghost sm burner-del" @click="removeBurner(i)" title="Remove this burner" aria-label="Remove burner">✕</button>
+                      </div>
+                    </template>
+                  </div>
+
+                  <button class="ghost sm" style="margin-top:6px;" @click="addBurner()">+ Add burner account</button>
+                </div>
               </div>
 
               <!-- ===== CONNECTION ===== -->
@@ -1968,6 +2005,7 @@
         clearBusy: false,
         resetBusy: false,
         trackBusy: false,
+        upgradeBusy: false,
         logsText: '',
         logsSource: '',
         logsNote: '',
@@ -2746,7 +2784,8 @@
             C.targeting.discovery = Object.assign({ enabled: false, keywords: [], negative_keywords: [], min_followers: 5000, max_followers: 500000 }, C.targeting.discovery || {});
             A('engagement', { reach_enabled: true, reach_source: 'hashtags', reach_view_story: true, reach_hashtags: [], reach_cadence_min: 1, reach_cadence_max: 4, reach_cadence_fallback: 5, reach_like_posts: 1, on_follow_view_story: true, on_follow_like_posts: 1 });
             A('marketing', { unfollow_after_days: 2, keep_followers_back: false, also_trim_following: false, list_trim_cap: 40, ratio_unfollows: 5, ratio_follows: 4 });
-            A('scraper', { enabled: false, keep_running: false, coordinate_with_bot: true, idle_recheck_min: 15, idle_recheck_max: 30, follow_pool_mult: 5, reach_pool_mult: 5, cdp_endpoint: '', idle_seconds: 600, filter_delay_min: 1, filter_delay_max: 3, long_break_every: 40, long_break_min: 60, long_break_max: 180 });
+            A('scraper', { enabled: false, keep_running: false, coordinate_with_bot: true, idle_recheck_min: 15, idle_recheck_max: 30, follow_pool_mult: 5, reach_pool_mult: 5, cdp_endpoint: '', idle_seconds: 600, filter_delay_min: 1, filter_delay_max: 3, long_break_every: 40, long_break_min: 60, long_break_max: 180, accounts: [] });
+            if (!Array.isArray(C.scraper.accounts)) C.scraper.accounts = [];
             A('behavior', { use_following_cache: true, warmup_browse_seconds: 20, account_resync_every: 40, unfollow_give_up_after: 3 });
             this.discoveryKeywordsText = (C.targeting.discovery.keywords || []).join('\n');
             this.discoveryNegativeText = (C.targeting.discovery.negative_keywords || []).join('\n');
@@ -2872,6 +2911,29 @@
             await this.fetch('/api/restart', { method: 'POST' });
             this.showToast('Restarting service… the dashboard will reconnect shortly (refresh if it doesn\'t).', 'success');
           } catch (e) { this.showToast(e.message, 'error'); }
+        },
+
+        addBurner() {
+          if (!this.config.scraper) return;
+          if (!Array.isArray(this.config.scraper.accounts)) this.config.scraper.accounts = [];
+          this.config.scraper.accounts.push({ label: '', username: '', password: '' });
+        },
+
+        removeBurner(i) {
+          if (this.config.scraper && Array.isArray(this.config.scraper.accounts)) {
+            this.config.scraper.accounts.splice(i, 1);
+          }
+        },
+
+        async upgradeConfig() {
+          if (!confirm('Add any missing config keys (new defaults) to config.yaml on the Pi?\n\nExisting values are kept. This rewrites config.yaml, so any hand-written comments are dropped.')) return;
+          this.upgradeBusy = true;
+          try {
+            const j = await this.fetch('/api/config/upgrade', { method: 'POST' });
+            await this.loadConfig();
+            this.showToast(j.added > 0 ? `Config upgraded — ${j.added} new key(s) added` : 'Config already up to date', 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
+          finally { this.upgradeBusy = false; }
         },
 
         async resetDaily() {

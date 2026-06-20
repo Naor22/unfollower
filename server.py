@@ -316,6 +316,19 @@ async def write_config(payload: ConfigUpdate):
     return {"ok": True}
 
 
+@app.post("/api/config/upgrade")
+async def upgrade_config_endpoint():
+    """Add any missing new-schema keys (new defaults) to config.yaml, keeping existing
+    values. Same as running upgrade_config.py on the Pi - exposed so the System page can
+    do it with one click after a deploy that adds new settings."""
+    import upgrade_config
+    try:
+        added = upgrade_config.upgrade()
+    except Exception as e:
+        raise HTTPException(500, f"Config upgrade failed: {e}")
+    return {"ok": True, "added": added}
+
+
 @app.get("/api/whitelist")
 async def read_whitelist():
     if not bot.WHITELIST_PATH.exists():
