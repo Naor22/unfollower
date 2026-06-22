@@ -3627,17 +3627,42 @@ class Bot:
         except Exception:
             return False
 
-    def _follows_you(self, page) -> bool:
+    def _follows_you(self, page, settle: bool = False) -> bool:
         """True if the profile shows the 'Follows you' chip (they already follow
         us). IG renders it as a small label next to the username in the header.
         Used both to skip them on the follow side and for the churn reciprocity
-        check (stage 3)."""
+        check (stage 3).
+
+        settle=True (churn reciprocity): IG paints the header - and this chip -
+        a moment AFTER domcontentloaded, so a single immediate read on a slow
+        load misses it and wrongly records 'didn't follow back', skewing the
+        per-source conversion analytics. Wait for the header, then poll briefly
+        for the chip so an absent chip means a real no-follow-back, not a
+        half-rendered page."""
+        def _present() -> bool:
+            try:
+                if page.locator('header :text-is("Follows you")').count() > 0:
+                    return True
+                return page.locator(':text-is("Follows you")').count() > 0
+            except Exception:
+                return False
+
+        if not settle:
+            return _present()
+
+        # Don't trust a negative until the header has actually rendered.
         try:
-            if page.locator('header :text-is("Follows you")').count() > 0:
-                return True
-            return page.locator(':text-is("Follows you")').count() > 0
+            page.wait_for_selector("header", timeout=12000)
         except Exception:
-            return False
+            pass
+        # The chip can lag the header by a beat; poll ~3s before giving up.
+        for _ in range(6):
+            if _present():
+                return True
+            if self._stop_event.is_set():
+                break
+            self._interruptible_sleep(0.5)
+        return False
 
     def _passes_filters(self, counts: dict, filters: dict) -> Optional[str]:
         """Return a skip reason ('no_posts' / 'filtered') if the account fails the
@@ -5795,7 +5820,9 @@ class Bot:
 
             # Measure reciprocity for per-source analytics regardless of the
             # keep_back setting - the churn visit is the natural measurement point.
-            follows_back = self._follows_you(page)
+            # settle=True: wait for the header + poll for the chip so a slow render
+            # isn't mis-recorded as 'didn't follow back' (the analytics depend on it).
+            follows_back = self._follows_you(page, settle=True)
             src = source_map.get(u, "")
 
             if keep_back and follows_back:
