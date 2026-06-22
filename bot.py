@@ -966,6 +966,19 @@ class Bot:
             self._thread.start()
             return True
 
+    def start_recheck(self) -> bool:
+        """Re-measure follow-back for every already-churned account in the
+        background. Shares the run thread slot (mutually exclusive with a normal
+        run / scrape - they'd fight over the same browser tab)."""
+        with self._lock:
+            if self.is_running:
+                return False
+            self._stop_event.clear()
+            self._pause_event.clear()
+            self._thread = threading.Thread(target=self._recheck_churn_once, daemon=True)
+            self._thread.start()
+            return True
+
     def stop(self) -> None:
         self._stop_event.set()
         self._pause_event.clear()
@@ -3627,17 +3640,42 @@ class Bot:
         except Exception:
             return False
 
-    def _follows_you(self, page) -> bool:
+    def _follows_you(self, page, settle: bool = False) -> bool:
         """True if the profile shows the 'Follows you' chip (they already follow
         us). IG renders it as a small label next to the username in the header.
         Used both to skip them on the follow side and for the churn reciprocity
-        check (stage 3)."""
+        check (stage 3).
+
+        settle=True (churn reciprocity): IG paints the header - and this chip -
+        a moment AFTER domcontentloaded, so a single immediate read on a slow
+        load misses it and wrongly records 'didn't follow back', skewing the
+        per-source conversion analytics. Wait for the header, then poll briefly
+        for the chip so an absent chip means a real no-follow-back, not a
+        half-rendered page."""
+        def _present() -> bool:
+            try:
+                if page.locator('header :text-is("Follows you")').count() > 0:
+                    return True
+                return page.locator(':text-is("Follows you")').count() > 0
+            except Exception:
+                return False
+
+        if not settle:
+            return _present()
+
+        # Don't trust a negative until the header has actually rendered.
         try:
-            if page.locator('header :text-is("Follows you")').count() > 0:
-                return True
-            return page.locator(':text-is("Follows you")').count() > 0
+            page.wait_for_selector("header", timeout=12000)
         except Exception:
-            return False
+            pass
+        # The chip can lag the header by a beat; poll ~3s before giving up.
+        for _ in range(6):
+            if _present():
+                return True
+            if self._stop_event.is_set():
+                break
+            self._interruptible_sleep(0.5)
+        return False
 
     def _passes_filters(self, counts: dict, filters: dict) -> Optional[str]:
         """Return a skip reason ('no_posts' / 'filtered') if the account fails the
@@ -3733,6 +3771,24 @@ class Bot:
                 return loc
             except Exception:
                 continue
+        return None
+
+    def _header_shows_follow_back(self, page) -> Optional[bool]:
+        """Post-unfollow reciprocity signal read from the header button: IG flips
+        it to 'Follow Back' when the account follows us, or plain 'Follow' when it
+        doesn't. Returns True/False accordingly, or None if neither exact button is
+        in the header (e.g. the unfollow finished in a post/modal view, or the
+        profile is gone). Scoped to <header> so the 'Suggested for you' carousel's
+        Follow buttons can't be mistaken for this one - same guard the unfollow
+        path uses. A second source of truth to back up the 'Follows you' chip."""
+        try:
+            hdr = page.locator("header")
+            if hdr.get_by_role("button", name="Follow Back", exact=True).count() > 0:
+                return True
+            if hdr.get_by_role("button", name="Follow", exact=True).count() > 0:
+                return False
+        except Exception:
+            pass
         return None
 
     def _find_post_follow_button(self, page, target: str):
@@ -5795,7 +5851,9 @@ class Bot:
 
             # Measure reciprocity for per-source analytics regardless of the
             # keep_back setting - the churn visit is the natural measurement point.
-            follows_back = self._follows_you(page)
+            # settle=True: wait for the header + poll for the chip so a slow render
+            # isn't mis-recorded as 'didn't follow back' (the analytics depend on it).
+            follows_back = self._follows_you(page, settle=True)
             src = source_map.get(u, "")
 
             if keep_back and follows_back:
@@ -5818,6 +5876,16 @@ class Bot:
             if result == "checkpoint":
                 return "checkpoint"
 
+            # Corroborate reciprocity from the post-unfollow header button: once the
+            # unfollow lands the button reads 'Follow Back' (they follow us) vs plain
+            # 'Follow' (they don't). Use it only to UPGRADE a negative chip read, so a
+            # chip the slow render missed still gets counted as a follow-back and the
+            # analytics don't undercount. We're on the profile after 'ok'/'not_following'.
+            if not follows_back and result in ("ok", "not_following"):
+                if self._header_shows_follow_back(page) is True:
+                    follows_back = True
+                    self._step(u, "follow-back confirmed by button (chip missed)", "good")
+
             if result == "ok" or result == "not_following" or result == "private_or_missing" \
                     or result.startswith("no_button_no_posts"):
                 # Either we unfollowed them, or there's nothing left to unfollow -
@@ -5828,8 +5896,10 @@ class Bot:
                     # A REAL unfollow happened - count it + feed the live churn gauge.
                     new_count = self.state.snapshot()["churn_unfollowed_count"] + 1
                     self.state.emit("churn_unfollowed", {"timestamp": ts, "username": u})
-                    self.state.update(churn_unfollowed_count=new_count,
-                                      last_message=f"churned @{u} (didn't follow back)")
+                    self.state.update(
+                        churn_unfollowed_count=new_count,
+                        last_message=(f"churned @{u} "
+                                      f"({'followed back' if follows_back else 'didnt follow back'})"))
                     processed += 1
                     self._day_record("unfollows", cfg)
                     consecutive_errors = 0
@@ -6497,6 +6567,134 @@ class Bot:
                               next_action_at=None)
         except Exception as e:
             self.state.update(status="error", error=f"scrape failed: {e}", next_action_at=None)
+
+    def _recheck_churn_once(self) -> None:
+        """Re-visit every already-churned account, re-measure whether they follow
+        us now, and rewrite the per-source outcome so the analytics reflect reality.
+        Backs the dashboard 'Recheck churned' button: churn records written before
+        the follow-back fix all defaulted to 'didn't follow back', so the conversion
+        numbers under-count real follow-backs until they're re-measured.
+
+        Appends a fresh outcome row per account (the analytics dedup by username,
+        last write wins), so a recheck simply overrides the stale value."""
+        try:
+            load_dotenv(ROOT / ".env", override=True)
+            self._me = (os.getenv("IG_USERNAME") or "").lstrip("@").lower()
+            cfg = load_config()
+            browser_cfg = cfg["browser"]
+            DATA_DIR.mkdir(exist_ok=True)
+
+            # Distinct churned accounts, most-recent first (the log is oldest-first,
+            # and a partial/interrupted run should cover recent churn first).
+            seen: set[str] = set()
+            targets: list[str] = []
+            for r in reversed(read_churn_unfollowed_log()):
+                u = r["username"].lstrip("@").lower()
+                if u and u not in seen:
+                    seen.add(u)
+                    targets.append(u)
+
+            if not targets:
+                self.state.update(status="idle", phase_detail="no churned accounts to recheck",
+                                  last_message="recheck: nothing to do", next_action_at=None)
+                return
+
+            # Source for each account: last measured outcome wins, else the follow log.
+            src_map: dict[str, str] = {}
+            for o in read_follow_outcomes():
+                src_map[o["username"].lower()] = o.get("source", "")
+            for f in read_followed_log():
+                src_map.setdefault(f["username"].lower(), f.get("source", ""))
+
+            outcomes_log = _log_path("follow_outcomes_log", "data/follow_outcomes.log")
+            total = len(targets)
+            self.state.update(status="rechecking", started_at=time.time(), error=None,
+                              current_target=None, next_action_at=None,
+                              phase_detail=f"recheck: launching browser ({total} to check)")
+
+            checked = 0
+            now_back = 0
+            with sync_playwright() as p:
+                browser, context, page, using_cdp, using_persistent = self._connect(p, browser_cfg)
+                try:
+                    if self._stop_event.is_set():
+                        raise _Stopped()
+                    if not self._is_logged_in(page):
+                        self.state.update(status="error",
+                                          error="Not logged in - log in, then recheck again.")
+                        return
+                    self._refresh_account_counts(page)
+
+                    for u in targets:
+                        if self._stop_event.is_set():
+                            raise _Stopped()
+                        checked += 1
+                        self.state.update(current_target=u,
+                                          phase_detail=f"recheck {checked}/{total}: @{u}")
+                        try:
+                            page.goto(f"https://www.instagram.com/{u}/",
+                                      wait_until="domcontentloaded")
+                        except Exception:
+                            self._step(u, "profile load failed - skipping", "bad")
+                            continue
+                        if self._checkpoint_detected(page):
+                            self.state.update(status="error",
+                                              error="Instagram checkpoint - resolve it, then recheck again.")
+                            return
+                        if self._rate_limited(page):
+                            if self._handle_soft_block(cfg) == "block":
+                                self.state.update(
+                                    status="error",
+                                    error="rate-limited during recheck - try again later.")
+                                return
+
+                        # Two independent signals: the 'Follows you' chip, and - since we
+                        # no longer follow these accounts - the header button reading
+                        # 'Follow Back' (they follow us) vs plain 'Follow' (they don't).
+                        follows_back = self._follows_you(page, settle=True)
+                        if not follows_back and self._header_shows_follow_back(page) is True:
+                            follows_back = True
+
+                        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                        append_log(outcomes_log,
+                                   f"{ts}\t{u}\t{src_map.get(u, '')}\t{'1' if follows_back else '0'}")
+                        if follows_back:
+                            now_back += 1
+                            self._step(u, "follows back - analytics corrected", "good")
+                        else:
+                            self._step(u, "still not following back")
+                        self.state.update(
+                            last_message=f"recheck {checked}/{total}: {now_back} follow back so far")
+                        self._jitter(2.5, 5.0)
+                finally:
+                    if using_persistent:
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+                    elif not using_cdp:
+                        try:
+                            context.storage_state(path=str(SESSION_PATH))
+                        except Exception:
+                            pass
+                        try:
+                            browser.close()
+                        except Exception:
+                            pass
+
+            if self.state.snapshot()["status"] != "error":
+                self.state.update(
+                    status="stopped" if self._stop_event.is_set() else "idle",
+                    phase_detail=(f"recheck stopped ({checked}/{total} done)"
+                                  if self._stop_event.is_set()
+                                  else f"recheck done - {checked} checked, {now_back} follow back"),
+                    last_message=f"recheck: {now_back}/{checked} now follow back",
+                    current_target=None, next_action_at=None)
+        except _Stopped:
+            self.state.update(status="stopped", phase_detail="recheck stopped by user",
+                              current_target=None, next_action_at=None)
+        except Exception as e:
+            self.state.update(status="error", error=f"recheck failed: {e}", next_action_at=None)
 
 
 class _Stopped(Exception):

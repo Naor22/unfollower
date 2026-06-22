@@ -541,6 +541,19 @@ async def scrape_now():
     return {"ok": True}
 
 
+@app.post("/api/recheck-churn")
+async def recheck_churn():
+    """Re-measure follow-back for every already-churned account and rewrite the
+    per-source outcomes so the analytics are accurate. Needed because churn records
+    written before the follow-back fix all defaulted to 'didn't follow back'."""
+    churned = bot.read_churn_unfollowed_log()
+    if not churned:
+        raise HTTPException(400, "No churned accounts to recheck yet.")
+    if not bot_instance.start_recheck():
+        raise HTTPException(409, "Bot is busy (already running or scraping).")
+    return {"ok": True, "count": len({r["username"].lower() for r in churned})}
+
+
 @app.get("/api/discovered-sources")
 async def get_discovered_sources():
     """Niche-influencer accounts the bot flagged for review (bio-keyword match).

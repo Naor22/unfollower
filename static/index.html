@@ -1481,6 +1481,14 @@
           </div>
 
           <div class="card" style="margin-top:18px;">
+            <div class="card-title">Recheck churned <span class="pill">fix follow-back analytics</span></div>
+            <p class="hint" style="margin-bottom:12px;">Re-visits every account you've churned (unfollowed) and re-measures whether they actually follow you back, then rewrites the per-source outcomes. Run this once after the follow-back fix: older churn records all defaulted to "didn't follow back", so the conversion numbers under-count real follow-backs until they're re-measured. Runs in the background — watch the status bar — and is mutually exclusive with a normal run or scrape, so stop the bot first.</p>
+            <button class="ghost" @click="recheckChurn()" :disabled="isRunning" title="Re-measure follow-back for every churned account">
+              <span x-text="isRunning ? 'Bot busy — stop it first' : 'Recheck churned'"></span>
+            </button>
+          </div>
+
+          <div class="card" style="margin-top:18px;">
             <div class="card-title">Logs <span class="pill" x-text="logsSource === 'journal' ? 'service journal' : 'captured events'"></span>
               <div style="flex:1"></div>
               <button class="ghost sm" @click="loadLogs()" :disabled="logsBusy">Refresh</button>
@@ -2946,6 +2954,14 @@
                                                       : 'Daily tasks reset'), 'success');
           } catch (e) { this.showToast(e.message, 'error'); }
           finally { this.resetBusy = false; }
+        },
+
+        async recheckChurn() {
+          if (!confirm('Re-visit every churned account and re-measure whether they follow you back?\n\nThis updates the analytics (it rewrites the per-source outcomes). It runs in the background and can take a while for a large churn list. The bot must be stopped.')) return;
+          try {
+            const j = await this.fetch('/api/recheck-churn', { method: 'POST' });
+            this.showToast(`Rechecking ${j.count} churned account(s) — watch the status bar`, 'success');
+          } catch (e) { this.showToast(e.message, 'error'); }
         },
 
         anyDeploySelected() { return Object.values(this.deploySel).some(Boolean); },
