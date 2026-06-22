@@ -3760,6 +3760,24 @@ class Bot:
                 continue
         return None
 
+    def _header_shows_follow_back(self, page) -> Optional[bool]:
+        """Post-unfollow reciprocity signal read from the header button: IG flips
+        it to 'Follow Back' when the account follows us, or plain 'Follow' when it
+        doesn't. Returns True/False accordingly, or None if neither exact button is
+        in the header (e.g. the unfollow finished in a post/modal view, or the
+        profile is gone). Scoped to <header> so the 'Suggested for you' carousel's
+        Follow buttons can't be mistaken for this one - same guard the unfollow
+        path uses. A second source of truth to back up the 'Follows you' chip."""
+        try:
+            hdr = page.locator("header")
+            if hdr.get_by_role("button", name="Follow Back", exact=True).count() > 0:
+                return True
+            if hdr.get_by_role("button", name="Follow", exact=True).count() > 0:
+                return False
+        except Exception:
+            pass
+        return None
+
     def _find_post_follow_button(self, page, target: str):
         """The 'Follow' button next to the author's name in an OPEN post's header.
         Scoped to the author's profile link so we never grab a 'Follow' from a
@@ -5845,6 +5863,16 @@ class Bot:
             if result == "checkpoint":
                 return "checkpoint"
 
+            # Corroborate reciprocity from the post-unfollow header button: once the
+            # unfollow lands the button reads 'Follow Back' (they follow us) vs plain
+            # 'Follow' (they don't). Use it only to UPGRADE a negative chip read, so a
+            # chip the slow render missed still gets counted as a follow-back and the
+            # analytics don't undercount. We're on the profile after 'ok'/'not_following'.
+            if not follows_back and result in ("ok", "not_following"):
+                if self._header_shows_follow_back(page) is True:
+                    follows_back = True
+                    self._step(u, "follow-back confirmed by button (chip missed)", "good")
+
             if result == "ok" or result == "not_following" or result == "private_or_missing" \
                     or result.startswith("no_button_no_posts"):
                 # Either we unfollowed them, or there's nothing left to unfollow -
@@ -5855,8 +5883,10 @@ class Bot:
                     # A REAL unfollow happened - count it + feed the live churn gauge.
                     new_count = self.state.snapshot()["churn_unfollowed_count"] + 1
                     self.state.emit("churn_unfollowed", {"timestamp": ts, "username": u})
-                    self.state.update(churn_unfollowed_count=new_count,
-                                      last_message=f"churned @{u} (didn't follow back)")
+                    self.state.update(
+                        churn_unfollowed_count=new_count,
+                        last_message=(f"churned @{u} "
+                                      f"({'followed back' if follows_back else 'didnt follow back'})"))
                     processed += 1
                     self._day_record("unfollows", cfg)
                     consecutive_errors = 0
