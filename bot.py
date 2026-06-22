@@ -966,6 +966,19 @@ class Bot:
             self._thread.start()
             return True
 
+    def start_recheck(self) -> bool:
+        """Re-measure follow-back for every already-churned account in the
+        background. Shares the run thread slot (mutually exclusive with a normal
+        run / scrape - they'd fight over the same browser tab)."""
+        with self._lock:
+            if self.is_running:
+                return False
+            self._stop_event.clear()
+            self._pause_event.clear()
+            self._thread = threading.Thread(target=self._recheck_churn_once, daemon=True)
+            self._thread.start()
+            return True
+
     def stop(self) -> None:
         self._stop_event.set()
         self._pause_event.clear()
@@ -6554,6 +6567,134 @@ class Bot:
                               next_action_at=None)
         except Exception as e:
             self.state.update(status="error", error=f"scrape failed: {e}", next_action_at=None)
+
+    def _recheck_churn_once(self) -> None:
+        """Re-visit every already-churned account, re-measure whether they follow
+        us now, and rewrite the per-source outcome so the analytics reflect reality.
+        Backs the dashboard 'Recheck churned' button: churn records written before
+        the follow-back fix all defaulted to 'didn't follow back', so the conversion
+        numbers under-count real follow-backs until they're re-measured.
+
+        Appends a fresh outcome row per account (the analytics dedup by username,
+        last write wins), so a recheck simply overrides the stale value."""
+        try:
+            load_dotenv(ROOT / ".env", override=True)
+            self._me = (os.getenv("IG_USERNAME") or "").lstrip("@").lower()
+            cfg = load_config()
+            browser_cfg = cfg["browser"]
+            DATA_DIR.mkdir(exist_ok=True)
+
+            # Distinct churned accounts, most-recent first (the log is oldest-first,
+            # and a partial/interrupted run should cover recent churn first).
+            seen: set[str] = set()
+            targets: list[str] = []
+            for r in reversed(read_churn_unfollowed_log()):
+                u = r["username"].lstrip("@").lower()
+                if u and u not in seen:
+                    seen.add(u)
+                    targets.append(u)
+
+            if not targets:
+                self.state.update(status="idle", phase_detail="no churned accounts to recheck",
+                                  last_message="recheck: nothing to do", next_action_at=None)
+                return
+
+            # Source for each account: last measured outcome wins, else the follow log.
+            src_map: dict[str, str] = {}
+            for o in read_follow_outcomes():
+                src_map[o["username"].lower()] = o.get("source", "")
+            for f in read_followed_log():
+                src_map.setdefault(f["username"].lower(), f.get("source", ""))
+
+            outcomes_log = _log_path("follow_outcomes_log", "data/follow_outcomes.log")
+            total = len(targets)
+            self.state.update(status="rechecking", started_at=time.time(), error=None,
+                              current_target=None, next_action_at=None,
+                              phase_detail=f"recheck: launching browser ({total} to check)")
+
+            checked = 0
+            now_back = 0
+            with sync_playwright() as p:
+                browser, context, page, using_cdp, using_persistent = self._connect(p, browser_cfg)
+                try:
+                    if self._stop_event.is_set():
+                        raise _Stopped()
+                    if not self._is_logged_in(page):
+                        self.state.update(status="error",
+                                          error="Not logged in - log in, then recheck again.")
+                        return
+                    self._refresh_account_counts(page)
+
+                    for u in targets:
+                        if self._stop_event.is_set():
+                            raise _Stopped()
+                        checked += 1
+                        self.state.update(current_target=u,
+                                          phase_detail=f"recheck {checked}/{total}: @{u}")
+                        try:
+                            page.goto(f"https://www.instagram.com/{u}/",
+                                      wait_until="domcontentloaded")
+                        except Exception:
+                            self._step(u, "profile load failed - skipping", "bad")
+                            continue
+                        if self._checkpoint_detected(page):
+                            self.state.update(status="error",
+                                              error="Instagram checkpoint - resolve it, then recheck again.")
+                            return
+                        if self._rate_limited(page):
+                            if self._handle_soft_block(cfg) == "block":
+                                self.state.update(
+                                    status="error",
+                                    error="rate-limited during recheck - try again later.")
+                                return
+
+                        # Two independent signals: the 'Follows you' chip, and - since we
+                        # no longer follow these accounts - the header button reading
+                        # 'Follow Back' (they follow us) vs plain 'Follow' (they don't).
+                        follows_back = self._follows_you(page, settle=True)
+                        if not follows_back and self._header_shows_follow_back(page) is True:
+                            follows_back = True
+
+                        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                        append_log(outcomes_log,
+                                   f"{ts}\t{u}\t{src_map.get(u, '')}\t{'1' if follows_back else '0'}")
+                        if follows_back:
+                            now_back += 1
+                            self._step(u, "follows back - analytics corrected", "good")
+                        else:
+                            self._step(u, "still not following back")
+                        self.state.update(
+                            last_message=f"recheck {checked}/{total}: {now_back} follow back so far")
+                        self._jitter(2.5, 5.0)
+                finally:
+                    if using_persistent:
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+                    elif not using_cdp:
+                        try:
+                            context.storage_state(path=str(SESSION_PATH))
+                        except Exception:
+                            pass
+                        try:
+                            browser.close()
+                        except Exception:
+                            pass
+
+            if self.state.snapshot()["status"] != "error":
+                self.state.update(
+                    status="stopped" if self._stop_event.is_set() else "idle",
+                    phase_detail=(f"recheck stopped ({checked}/{total} done)"
+                                  if self._stop_event.is_set()
+                                  else f"recheck done - {checked} checked, {now_back} follow back"),
+                    last_message=f"recheck: {now_back}/{checked} now follow back",
+                    current_target=None, next_action_at=None)
+        except _Stopped:
+            self.state.update(status="stopped", phase_detail="recheck stopped by user",
+                              current_target=None, next_action_at=None)
+        except Exception as e:
+            self.state.update(status="error", error=f"recheck failed: {e}", next_action_at=None)
 
 
 class _Stopped(Exception):
