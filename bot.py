@@ -4399,6 +4399,31 @@ class Bot:
         now = time.localtime()
         return float(86400 - (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec) + 5)
 
+    def _roll_daily_start(self, cfg) -> float:
+        """Pick today's randomized first-action epoch: earliest start hour + random
+        jitter. Earliest = active_hours_start when active-hours is on, else the
+        daily_start_hour knob. Stops the very bot-like 'begins exactly at 00:00'."""
+        safety = cfg.get("safety", {}) or {}
+        win = self._active_window(cfg)
+        earliest_h = win[0] if win else int(safety.get("daily_start_hour", 7))
+        jitter_min = float(safety.get("daily_start_jitter_min", 180))
+        now = time.localtime()
+        midnight = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
+                                0, 0, 0, 0, 0, -1))
+        return midnight + earliest_h * 3600 + random.uniform(0, jitter_min * 60)
+
+    def _daily_start_at(self, cfg) -> float:
+        """Epoch of today's randomized first-action moment, rolled once per day and
+        cached in the ledger so it's stable across re-checks/restarts.
+        ponytail: assumes a same-day window (start hour < end). A wrap-midnight
+        active window would lose its pre-dawn tail — switch to per-window rolling if
+        anyone actually configures start > end."""
+        L = self._ensure_ledger(cfg)
+        if "start_at" not in L:
+            L["start_at"] = self._roll_daily_start(cfg)
+            self._save_ledger()
+        return float(L["start_at"])
+
     def _can_act(self, kind, cfg) -> bool:
         """Gate every real action: must be inside active hours AND under today's cap."""
         return self._in_active_hours(cfg) and self._day_room(kind, cfg) > 0
@@ -6214,6 +6239,22 @@ class Bot:
                     pacing = day_cfg["pacing"]
                     self._publish_day_counts(day_cfg)   # top bar: done / cap (also re-rolls at midnight)
                     self._deep_idle = False   # default; set True only in the long-sleep gates below
+
+                    # Randomized daily kick-off: don't start the instant the day rolls
+                    # over at 00:00 (very bot-like). Each day picks a random first-action
+                    # time; until then stay deep-idle (browser closed, scraper fills pools).
+                    start_at = self._daily_start_at(day_cfg)
+                    if time.time() < start_at:
+                        self._deep_idle = True
+                        disconnect(); self._set_acting(False)
+                        wait = start_at - time.time()
+                        clk = time.strftime("%H:%M", time.localtime(start_at))
+                        self.state.update(status="sleeping", current_target=None,
+                                          next_action_at=start_at)
+                        self._sleep_reflecting_scraper(
+                            wait, f"today's start ~{clk} (in ~{wait / 3600:.1f}h)")
+                        self.state.update(next_action_at=None)
+                        continue
 
                     # --- ban-safety gates (NO browser needed → keep the bot's Chrome
                     #     CLOSED so the scraper gets the whole Pi) ---
