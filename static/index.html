@@ -1476,7 +1476,7 @@
 
           <div class="card" style="margin-top:18px;">
             <div class="card-title">Daily tasks <span class="pill">today's action ledger</span></div>
-            <p class="hint" style="margin-bottom:12px;">Reset today's follow / unfollow / like counts to zero so the bot can run a fresh full day's caps again. Caps re-roll; a bot that's sleeping on "daily caps reached" wakes and resumes within ~a minute. Your permanent logs are untouched.</p>
+            <p class="hint" style="margin-bottom:12px;">Reset the current run's follow / unfollow / like counts to zero so the bot starts a fresh run now. Caps re-roll; a bot that's sleeping between runs ("next run ~…") wakes and resumes within ~a minute. Your permanent logs are untouched.</p>
             <button class="ghost" @click="resetDaily()" :disabled="resetBusy" title="Zero today's action counts so the bot runs again">Reset daily tasks</button>
           </div>
 

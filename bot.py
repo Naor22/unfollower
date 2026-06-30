@@ -4298,9 +4298,16 @@ class Bot:
             except Exception:
                 L = {}
         if L.get("date") != today:
+            # New calendar day → reset the action ledger. This per-CALENDAR-DAY reset is
+            # the HARD ban-safety ceiling: at most one cap's worth of actions per day,
+            # no matter how the run gap falls. But CARRY the pending next-run schedule
+            # across midnight, so the randomized 12-20h gap isn't overridden by the cap
+            # refill (else the bot would resume the instant the day rolls over, ~00:00).
+            prev_nra = (L or {}).get("next_run_at")
             L = {"date": today, "follows": 0, "unfollows": 0, "likes": 0,
                  "stories": 0, "soft_blocks": 0, "last_block_ts": 0,
-                 "follow_rests": 0, "caps": self._roll_daily_caps(cfg), "caps_base": bases}
+                 "follow_rests": 0, "caps": self._roll_daily_caps(cfg), "caps_base": bases,
+                 "next_run_at": prev_nra}
             self._ledger = L
             self._save_ledger()
         else:
@@ -4395,34 +4402,37 @@ class Bot:
             return float(start_secs - secs_now)
         return float((86400 - secs_now) + start_secs)
 
-    def _seconds_until_tomorrow(self) -> float:
-        now = time.localtime()
-        return float(86400 - (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec) + 5)
-
-    def _roll_daily_start(self, cfg) -> float:
-        """Pick today's randomized first-action epoch: earliest start hour + random
-        jitter. Earliest = active_hours_start when active-hours is on, else the
-        daily_start_hour knob. Stops the very bot-like 'begins exactly at 00:00'."""
-        safety = cfg.get("safety", {}) or {}
-        win = self._active_window(cfg)
-        earliest_h = win[0] if win else int(safety.get("daily_start_hour", 7))
-        jitter_min = float(safety.get("daily_start_jitter_min", 180))
-        now = time.localtime()
-        midnight = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
-                                0, 0, 0, 0, 0, -1))
-        return midnight + earliest_h * 3600 + random.uniform(0, jitter_min * 60)
-
-    def _daily_start_at(self, cfg) -> float:
-        """Epoch of today's randomized first-action moment, rolled once per day and
-        cached in the ledger so it's stable across re-checks/restarts.
-        ponytail: assumes a same-day window (start hour < end). A wrap-midnight
-        active window would lose its pre-dawn tail — switch to per-window rolling if
-        anyone actually configures start > end."""
+    def _next_run_at(self, cfg):
+        """Epoch when the next run may start, or None if a run may start now. Persisted
+        in the ledger (and carried across the midnight cap-reset by _ensure_ledger) so it
+        survives restarts and the daily refill doesn't drag the next run back to 00:00."""
         L = self._ensure_ledger(cfg)
-        if "start_at" not in L:
-            L["start_at"] = self._roll_daily_start(cfg)
+        v = L.get("next_run_at")
+        return float(v) if v else None
+
+    def _schedule_next_run(self, cfg) -> float:
+        """Schedule the next run a random 12-20h out (configurable), anchored to NOW -
+        not the wall clock, so the start time never snaps to 00:00. The per-calendar-day
+        cap reset is still the hard ceiling; this only randomizes WHEN the next allowed
+        run happens. Returns the scheduled epoch."""
+        safety = cfg.get("safety", {}) or {}
+        lo = float(safety.get("run_gap_hours_min", 12))
+        hi = float(safety.get("run_gap_hours_max", 20))
+        gap = random.uniform(min(lo, hi), max(lo, hi)) * 3600
+        nra = time.time() + gap
+        L = self._ensure_ledger(cfg)
+        L["next_run_at"] = nra
+        self._save_ledger()
+        self.state.emit("log", {"level": "info",
+            "msg": f"next run scheduled in ~{gap / 3600:.1f}h "
+                   f"(~{time.strftime('%a %H:%M', time.localtime(nra))})"})
+        return nra
+
+    def _clear_next_run(self, cfg) -> None:
+        """Drop any pending next-run schedule (called when a run actually starts)."""
+        L = self._ensure_ledger(cfg)
+        if L.pop("next_run_at", None) is not None:
             self._save_ledger()
-        return float(L["start_at"])
 
     def _can_act(self, kind, cfg) -> bool:
         """Gate every real action: must be inside active hours AND under today's cap."""
@@ -6237,24 +6247,8 @@ class Bot:
                     # cap or whitelist) take effect on the next batch.
                     day_cfg = load_config()
                     pacing = day_cfg["pacing"]
-                    self._publish_day_counts(day_cfg)   # top bar: done / cap (also re-rolls at midnight)
+                    self._publish_day_counts(day_cfg)   # top bar: done / cap
                     self._deep_idle = False   # default; set True only in the long-sleep gates below
-
-                    # Randomized daily kick-off: don't start the instant the day rolls
-                    # over at 00:00 (very bot-like). Each day picks a random first-action
-                    # time; until then stay deep-idle (browser closed, scraper fills pools).
-                    start_at = self._daily_start_at(day_cfg)
-                    if time.time() < start_at:
-                        self._deep_idle = True
-                        disconnect(); self._set_acting(False)
-                        wait = start_at - time.time()
-                        clk = time.strftime("%H:%M", time.localtime(start_at))
-                        self.state.update(status="sleeping", current_target=None,
-                                          next_action_at=start_at)
-                        self._sleep_reflecting_scraper(
-                            wait, f"today's start ~{clk} (in ~{wait / 3600:.1f}h)")
-                        self.state.update(next_action_at=None)
-                        continue
 
                     # --- ban-safety gates (NO browser needed → keep the bot's Chrome
                     #     CLOSED so the scraper gets the whole Pi) ---
@@ -6271,26 +6265,42 @@ class Bot:
                         self._interruptible_sleep(gate_secs)
                         self.state.update(next_action_at=None)
                         continue
-                    # Hit today's caps → sleep to the next local day (caps re-roll then).
-                    # The burner keeps building tomorrow's pools meanwhile, so reflect
-                    # 'scraping' while it works rather than a flat 'sleeping'.
-                    if self._day_capped_for_mode(day_cfg, mode):
-                        self._deep_idle = True   # done for the day → scraper builds both pools high
+                    # Gap-based run scheduler (ban safety + non-bot-like timing): a "run"
+                    # works until its per-day caps are reached, then the NEXT run is
+                    # scheduled a random 12-20h later, anchored to when this run ended (not
+                    # the wall clock, so it never snaps to 00:00). The per-CALENDAR-DAY cap
+                    # reset (in _ensure_ledger) stays the hard ceiling - at most one cap's
+                    # worth of actions per day - and the schedule is carried across midnight
+                    # so the cap refill doesn't drag the next run back to 00:00.
+                    nra = self._next_run_at(day_cfg)
+                    if nra is not None and time.time() < nra:
+                        self._deep_idle = True   # long sleep → scraper builds both pools high
                         disconnect(); self._set_acting(False)
-                        # Sleep toward tomorrow in short chunks, re-checking the cap each
-                        # chunk - so a manual "reset daily tasks" wakes the bot within ~a
-                        # minute instead of waiting for midnight. The burner keeps filling
-                        # pools meanwhile (reflected as 'scraping').
-                        while not self._stop_event.is_set() and \
-                                self._day_capped_for_mode(load_config(), mode):
-                            gate_secs = self._seconds_until_tomorrow()
-                            resume_clk = time.strftime("%H:%M", time.localtime(time.time() + gate_secs))
-                            self.state.update(next_action_at=time.time() + gate_secs)
+                        # Short ticks so a manual "reset daily tasks" (wipes the ledger →
+                        # clears next_run_at) wakes the bot within ~a minute; the burner
+                        # keeps filling pools meanwhile (reflected as 'scraping').
+                        while not self._stop_event.is_set():
+                            nra = self._next_run_at(load_config())
+                            if nra is None or time.time() >= nra:
+                                break
+                            wait = nra - time.time()
+                            clk = time.strftime("%a %H:%M", time.localtime(nra))
+                            self.state.update(next_action_at=nra)
                             self._sleep_reflecting_scraper(
-                                min(gate_secs, 60.0),
-                                f"daily caps reached - resuming ~{resume_clk} (in ~{gate_secs / 3600:.1f}h)")
+                                min(wait, 60.0),
+                                f"run done - next run ~{clk} (in ~{wait / 3600:.1f}h)")
                         self.state.update(next_action_at=None)
                         continue
+                    # Gap elapsed (or none scheduled). If today's caps are already spent
+                    # (just finished a run, or the gap landed on an already-capped day),
+                    # schedule the next run 12-20h out and idle - the midnight reset refills
+                    # the cap, so the wake that lands on a fresh day actually runs.
+                    if self._day_capped_for_mode(day_cfg, mode):
+                        self._deep_idle = True
+                        disconnect(); self._set_acting(False)
+                        self._schedule_next_run(day_cfg)
+                        continue
+                    self._clear_next_run(day_cfg)   # cap has room → run now
 
                     # Pool coordination gate: stay fully idle (browser CLOSED) until every
                     # pool the bot will consume holds its low-water (follow: a daily cap of
@@ -6329,6 +6339,7 @@ class Bot:
 
                     # --- ACTIVE: bring the browser up, verify the session, then work ---
                     self._set_acting(True)   # scraper pauses + closes its Chrome
+                    run_date = time.strftime("%Y-%m-%d")   # calendar day this run belongs to
                     self._await_scraper_idle()   # wait for it to actually release the Pi first
                     page = ensure_connected()
                     # Session still valid? (only meaningful for non-CDP models)
@@ -6410,6 +6421,14 @@ class Bot:
                         )
                         break
                     if outcome == "rest":
+                        # If this run already crossed local midnight, it belongs to a past
+                        # calendar day - don't resume it after a short rest (that would start
+                        # a fresh day's run ~20-40m later, the bursty across-midnight pattern
+                        # the gap prevents). Schedule the full 12-20h gap and yield instead.
+                        if time.strftime("%Y-%m-%d") != run_date:
+                            disconnect(); self._set_acting(False)
+                            self._schedule_next_run(day_cfg)
+                            continue
                         # A run of follow failures = IG is gating follows. Don't hammer:
                         # close the browser (frees the Pi so the scraper fills pools) and
                         # back off so IG cools down, then resume. After too many rests in
@@ -6444,6 +6463,11 @@ class Bot:
                             "msg": f"follows gated - rest #{rests} for ~{rest_s / 60:.0f}m"})
                         self._interruptible_sleep(rest_s)
                         self.state.update(next_action_at=None)
+                        # The rest sleep itself may have crossed midnight - if so this run
+                        # belongs to a past day; schedule the full gap instead of resuming
+                        # into a fresh day's cap ~20-40m later.
+                        if time.strftime("%Y-%m-%d") != run_date:
+                            self._schedule_next_run(day_cfg)
                         continue
                     day_scraper = day_cfg.get("scraper", {}) or {}
                     keep_running = (bool(day_scraper.get("keep_running", False))
@@ -6452,14 +6476,18 @@ class Bot:
                     if not daily_loop and not keep_running:
                         break  # one-shot mode: a single batch then stop
 
+                    # A run that finished its caps - OR that crossed local midnight while
+                    # working - schedules the next run (random gap) HERE, on completion, and
+                    # yields to the top. Anchoring on the run's start date matters: a run
+                    # spanning midnight makes _day_capped_for_mode see a fresh (uncapped) day,
+                    # so without the day-rolled check the loop would start a second run with
+                    # no gap - the bursty ~00:00 pattern the gap exists to prevent.
+                    day_rolled = time.strftime("%Y-%m-%d") != run_date
+                    if day_rolled or self._day_capped_for_mode(day_cfg, mode):
+                        self._schedule_next_run(day_cfg)
+                        continue
+
                     if keep_running:
-                        # If THIS cycle just exhausted the daily cap(s), don't do a short
-                        # re-check - loop straight back so the cap gate at the top of the
-                        # loop sleeps us until tomorrow. The gate is only evaluated at the
-                        # top, so a cycle that hits the cap mid-way must yield here or it
-                        # would otherwise idle one pointless re-check interval first.
-                        if self._day_capped_for_mode(day_cfg, mode):
-                            continue
                         # Explain WHY we're re-checking rather than acting, so a short
                         # countdown right after a cap is hit reads sensibly. In marketing
                         # one cap can be reached while the other still has room (e.g.
